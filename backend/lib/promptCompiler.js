@@ -303,11 +303,11 @@ export function parseStoryStreamOutput(rawText) {
     return parsed;
   }
 
-  // 1. Extract <thinking>...</thinking>
-  const thinkingMatch = prose.match(/<thinking>([\s\S]*?)(?:<\/thinking>|$)/i);
+  // 1. Extract <thinking>...</thinking> (must NOT consume [STORY_START] if closing tag was omitted)
+  const thinkingMatch = prose.match(/<thinking>([\s\S]*?)(?:<\/thinking>|(?=\[STORY_START\])|$)/i);
   if (thinkingMatch) {
     thinking = thinkingMatch[1].trim();
-    prose = prose.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/i, '').trim();
+    prose = prose.replace(/<thinking>[\s\S]*?(?:<\/thinking>|(?=\[STORY_START\])|$)/i, '').trim();
   }
 
   // 2. Extract [BRANCH_CHOICES]...[/BRANCH_CHOICES]
@@ -422,9 +422,15 @@ export function sanitizeStreamBuffer(rawText) {
       thinking = working.slice(thinkingStart + 10, thinkingEnd).trim();
       working = working.slice(thinkingEnd + 11);
     } else {
-      // Still actively inside <thinking> block - withhold prose
-      thinking = working.slice(thinkingStart + 10).trim();
-      return { thinking, prose: '' };
+      const storyStartIdx = working.indexOf('[STORY_START]');
+      if (storyStartIdx !== -1 && storyStartIdx > thinkingStart) {
+        thinking = working.slice(thinkingStart + 10, storyStartIdx).trim();
+        working = working.slice(storyStartIdx);
+      } else {
+        // Still actively inside <thinking> block - withhold prose
+        thinking = working.slice(thinkingStart + 10).trim();
+        return { thinking, prose: '' };
+      }
     }
   }
 

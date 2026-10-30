@@ -55,10 +55,10 @@ export async function streamGroq({
     signal
   });
 
-  // If Qwen hits 429 rate limit / OTPM, smoothly fallback to high-capacity gpt-oss-20b on Groq
+  // If Qwen hits 429 rate limit / OTPM, smoothly fallback to high-capacity allam-2-7b on Groq
   if (response.status === 429 && activeModel === 'qwen/qwen3.8-27b') {
-    console.warn(`[Groq Provider] Qwen 3.8 27B hit OTPM limit. Falling back to openai/gpt-oss-20b on Groq...`);
-    activeModel = 'openai/gpt-oss-20b';
+    console.warn(`[Groq Provider] Qwen 3.8 27B hit OTPM limit. Falling back to allam-2-7b on Groq...`);
+    activeModel = 'allam-2-7b';
     response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -73,7 +73,7 @@ export async function streamGroq({
         ],
         temperature: parameters.temperature ?? 0.85,
         top_p: parameters.top_p ?? 0.93,
-        max_tokens: Math.min(parameters.max_tokens ?? 2000, 2048),
+        max_tokens: Math.min(parameters.max_tokens ?? 1500, 2048),
         stream: true
       }),
       signal

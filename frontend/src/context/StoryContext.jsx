@@ -50,9 +50,15 @@ function sanitizeClientStreamBuffer(rawBuffer) {
       thinking = working.slice(thinkingStart + 10, thinkingEnd).trim();
       working = working.slice(thinkingEnd + 11);
     } else {
-      // Still actively streaming thinking: withhold story tokens
-      thinking = working.slice(thinkingStart + 10).trim();
-      return { thinking, prose: '' };
+      const storyStartIdx = working.indexOf('[STORY_START]');
+      if (storyStartIdx !== -1 && storyStartIdx > thinkingStart) {
+        thinking = working.slice(thinkingStart + 10, storyStartIdx).trim();
+        working = working.slice(storyStartIdx);
+      } else {
+        // Still actively streaming thinking: withhold story tokens
+        thinking = working.slice(thinkingStart + 10).trim();
+        return { thinking, prose: '' };
+      }
     }
   }
 

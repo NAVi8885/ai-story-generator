@@ -5,7 +5,8 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/story-isolation.test.js"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.10",
