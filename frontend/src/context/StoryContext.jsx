@@ -139,6 +139,35 @@ export function StoryProvider({ children }) {
     setStoryBible((prev) => ({ ...prev, [field]: value }));
   };
 
+  const saveAndPersistKeys = async (newKeys) => {
+    const cleaned = {
+      groq: (newKeys.groq || '').trim(),
+      gemini: (newKeys.gemini || '').trim(),
+      openrouter: (newKeys.openrouter || '').trim(),
+      huggingface: (newKeys.huggingface || '').trim()
+    };
+
+    setByok(cleaned);
+    try {
+      localStorage.setItem('ai_story_byok', JSON.stringify(cleaned));
+    } catch (e) {
+      console.warn('Storage save error:', e);
+    }
+
+    try {
+      const res = await fetch('/api/settings/save-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleaned)
+      });
+      const data = await res.json();
+      return data;
+    } catch (err) {
+      console.warn('Server key persistence error:', err);
+      return { success: false, error: err.message };
+    }
+  };
+
   const resetSliders = () => {
     setSliders(DEFAULT_SLIDERS);
     setGenre('custom');
@@ -461,6 +490,7 @@ export function StoryProvider({ children }) {
         updateStoryBible,
         byok,
         setByok,
+        saveAndPersistKeys,
         history,
         saveCurrentToHistory,
         restoreFromHistory,

@@ -7,12 +7,41 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 import { compileNarrativePayload, parseStoryStreamOutput } from './lib/promptCompiler.js';
 import { routeStoryStream, getActiveProviders } from './lib/providers/router.js';
 
 dotenv.config({ path: '../.env' });
 // Fallback if running directly in root or backend
 dotenv.config();
+
+function getEnvPath() {
+  const rootEnv = path.resolve('../.env');
+  if (fs.existsSync(rootEnv)) return rootEnv;
+  const localEnv = path.resolve('./.env');
+  if (fs.existsSync(localEnv)) return localEnv;
+  return rootEnv;
+}
+
+function updateEnvFile(updates) {
+  const envPath = getEnvPath();
+  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+
+  for (const [key, val] of Object.entries(updates)) {
+    if (val === undefined) continue;
+    const cleanVal = (val || '').trim();
+    const regex = new RegExp(`^#?\\s*${key}=.*$`, 'm');
+
+    if (regex.test(content)) {
+      content = content.replace(regex, cleanVal ? `${key}=${cleanVal}` : `# ${key}=`);
+    } else if (cleanVal) {
+      content = content.trimEnd() + `\n${key}=${cleanVal}\n`;
+    }
+  }
+
+  fs.writeFileSync(envPath, content.trim() + '\n', 'utf8');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -55,6 +84,94 @@ app.get('/api/providers/status', (req, res) => {
     hasServerHF: Boolean(process.env.HUGGINGFACE_API_KEY),
     zeroAuthEnabled: true
   });
+});
+
+// Save API Keys to Persistent .env and Server Environment
+app.post('/api/settings/save-keys', (req, res) => {
+  try {
+    const { groq, gemini, openrouter, huggingface } = req.body;
+    const updates = {};
+
+    if (groq !== undefined) {
+      const clean = groq.trim();
+      process.env.GROQ_API_KEY = clean;
+      updates.GROQ_API_KEY = clean;
+    }
+    if (gemini !== undefined) {
+      const clean = gemini.trim();
+      process.env.GEMINI_API_KEY = clean;
+      updates.GEMINI_API_KEY = clean;
+    }
+    if (openrouter !== undefined) {
+      const clean = openrouter.trim();
+      process.env.OPENROUTER_API_KEY = clean;
+      updates.OPENROUTER_API_KEY = clean;
+    }
+    if (huggingface !== undefined) {
+      const clean = huggingface.trim();
+      process.env.HUGGINGFACE_API_KEY = clean;
+      updates.HUGGINGFACE_API_KEY = clean;
+    }
+
+    updateEnvFile(updates);
+
+    console.log('[Settings] Successfully saved and persisted keys:', Object.keys(updates));
+    res.json({
+      success: true,
+      message: 'Keys successfully saved to server environment and persistent .env file',
+      activeProviders: getActiveProviders(),
+      hasServerGroq: Boolean(process.env.GROQ_API_KEY),
+      hasServerGemini: Boolean(process.env.GEMINI_API_KEY),
+      hasServerOpenRouter: Boolean(process.env.OPENROUTER_API_KEY),
+      hasServerHF: Boolean(process.env.HUGGINGFACE_API_KEY)
+    });
+  } catch (error) {
+    console.error('[Save Keys Error]:', error);
+    res.status(500).json({ error: error.message || 'Failed to save keys' });
+  }
+});
+
+// Test / Validate an API Key against provider API
+app.post('/api/settings/validate-key', async (req, res) => {
+  const { provider, key } = req.body;
+  if (!key || typeof key !== 'string' || !key.trim()) {
+    return res.status(400).json({ valid: false, message: 'Key cannot be empty' });
+  }
+  const cleanKey = key.trim();
+
+  try {
+    if (provider === 'groq') {
+      const response = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { 'Authorization': `Bearer ${cleanKey}` }
+      });
+      if (response.ok) {
+        return res.json({ valid: true, message: 'Groq API Key is valid and active!' });
+      }
+      return res.json({ valid: false, message: `Groq rejected key (HTTP ${response.status})` });
+    }
+
+    if (provider === 'gemini') {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`);
+      if (response.ok) {
+        return res.json({ valid: true, message: 'Google Gemini API Key is valid!' });
+      }
+      return res.json({ valid: false, message: `Gemini rejected key (HTTP ${response.status})` });
+    }
+
+    if (provider === 'openrouter') {
+      const response = await fetch('https://openrouter.ai/api/v1/auth/key', {
+        headers: { 'Authorization': `Bearer ${cleanKey}` }
+      });
+      if (response.ok) {
+        return res.json({ valid: true, message: 'OpenRouter API Key is valid!' });
+      }
+      return res.json({ valid: false, message: `OpenRouter rejected key (HTTP ${response.status})` });
+    }
+
+    res.json({ valid: true, message: 'Key saved' });
+  } catch (err) {
+    res.status(500).json({ valid: false, message: `Validation error: ${err.message}` });
+  }
 });
 
 // Fast Premise Enhancer
