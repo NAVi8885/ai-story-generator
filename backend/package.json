@@ -1,0 +1,16 @@
+{
+  "name": "ai-story-generator-backend",
+  "version": "1.0.0",
+  "description": "Express backend for AI story generator with Hugging Face integration",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@huggingface/inference": "^4.13.10",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2"
+  }
+}
