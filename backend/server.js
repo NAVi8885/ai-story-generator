@@ -9,7 +9,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import { compileNarrativePayload, parseStoryStreamOutput } from './lib/promptCompiler.js';
+import { compileNarrativePayload, parseStoryStreamOutput, sanitizeStreamBuffer } from './lib/promptCompiler.js';
 import { routeStoryStream, getActiveProviders } from './lib/providers/router.js';
 
 dotenv.config({ path: '../.env' });
@@ -278,7 +278,10 @@ app.post('/api/generate/stream', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Streaming narrative generation for: "${prompt.slice(0, 50)}..."`);
     sendEvent('start', { meta: payload.meta, parameters: payload.parameters });
 
-    let fullGeneratedText = '';
+    let fullGeneratedProse = '';
+    let fullGeneratedThinking = '';
+    let lastSentProse = '';
+    let lastSentThinking = '';
 
     await routeStoryStream({
       systemPrompt: payload.systemPrompt,
@@ -287,15 +290,52 @@ app.post('/api/generate/stream', async (req, res) => {
       byok,
       signal: abortController.signal,
       onChunk: (chunk) => {
-        if (chunk.type === 'prose' || chunk.type === 'thinking') {
-          fullGeneratedText += chunk.text;
+        if (chunk.type === 'provider' || chunk.type === 'warning' || chunk.type === 'done') {
+          sendEvent(chunk.type, chunk);
+          return;
         }
-        sendEvent('chunk', chunk);
+
+        const rawText = chunk.text || '';
+
+        // Provider explicitly marked chunk as thinking (e.g. delta.reasoning)
+        if (chunk.type === 'thinking') {
+          fullGeneratedThinking += rawText;
+          lastSentThinking += rawText;
+          sendEvent('chunk', { type: 'thinking', text: rawText });
+          return;
+        }
+
+        if (chunk.type === 'prose') {
+          fullGeneratedProse += rawText;
+
+          // Process full generated prose through real-time sanitizer
+          const sanitized = sanitizeStreamBuffer(fullGeneratedProse);
+
+          // Emit thinking delta if extracted from <thinking> tag within prose stream
+          if (sanitized.thinking && sanitized.thinking.length > lastSentThinking.length) {
+            const thinkingDelta = sanitized.thinking.slice(lastSentThinking.length);
+            lastSentThinking = sanitized.thinking;
+            sendEvent('chunk', { type: 'thinking', text: thinkingDelta });
+          }
+
+          // Emit prose delta strictly when story has started and between delimiters
+          if (sanitized.prose && sanitized.prose.length > lastSentProse.length) {
+            if (sanitized.prose.startsWith(lastSentProse)) {
+              const proseDelta = sanitized.prose.slice(lastSentProse.length);
+              lastSentProse = sanitized.prose;
+              sendEvent('chunk', { type: 'prose', text: proseDelta });
+            } else {
+              lastSentProse = sanitized.prose;
+              sendEvent('chunk', { type: 'prose', text: sanitized.prose });
+            }
+          }
+        }
       }
     });
 
     // Parse final structured elements (thinking block, prose, branch choices)
-    const parsed = parseStoryStreamOutput(fullGeneratedText);
+    const combinedForParse = (fullGeneratedThinking ? `<thinking>${fullGeneratedThinking}</thinking>\n` : '') + fullGeneratedProse;
+    const parsed = parseStoryStreamOutput(combinedForParse);
     sendEvent('complete', {
       prose: parsed.prose,
       thinking: parsed.thinking,
@@ -335,7 +375,7 @@ app.post('/api/generate', async (req, res) => {
       userMessage: payload.userMessage,
       parameters: payload.parameters,
       onChunk: (chunk) => {
-        if (chunk.type === 'prose') text += chunk.text;
+        if (chunk.type === 'prose' || chunk.type === 'thinking') text += chunk.text;
       }
     });
 
@@ -343,6 +383,7 @@ app.post('/api/generate', async (req, res) => {
 
     res.json({
       story: parsed.prose,
+      prose: parsed.prose,
       thinking: parsed.thinking,
       branchChoices: parsed.branchChoices,
       prompt,

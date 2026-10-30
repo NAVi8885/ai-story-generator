@@ -86,10 +86,10 @@ export const ADHERENCE_SNIPPETS = {
 };
 
 export const LENGTH_PROFILES = {
-  flash: { words: 350, maxTokens: 750, label: 'Flash Fiction (~350 words)' },
-  short: { words: 650, maxTokens: 1200, label: 'Short Story (~650 words)' },
-  standard: { words: 1200, maxTokens: 2200, label: 'Standard Segment (~1,200 words)' },
-  chapter: { words: 2000, maxTokens: 3500, label: 'Full Chapter (~2,000 words)' }
+  flash: { words: 350, maxTokens: 1500, label: 'Flash Fiction (~350 words)' },
+  short: { words: 650, maxTokens: 2500, label: 'Short Story (~650 words)' },
+  standard: { words: 1200, maxTokens: 3800, label: 'Standard Segment (~1,200 words)' },
+  chapter: { words: 2000, maxTokens: 5500, label: 'Full Chapter (~2,000 words)' }
 };
 
 /**
@@ -144,6 +144,12 @@ export function compileNarrativePayload({
 You are a master fiction author, literary stylist, and narrative architect.
 Your mission is to expand the user's premise into an evocative, immersive, and logically coherent narrative chapter.`,
 
+    `# OUTPUT FORMAT RULES
+1. If reasoning is enabled, place it strictly inside <thinking>...</thinking>.
+2. Output the story prose strictly between [STORY_START] and [STORY_END].
+3. Output interactive choices strictly between [BRANCH_CHOICES] and [/BRANCH_CHOICES].
+4. CRITICAL NEGATIVE CONSTRAINT: NEVER repeat, summarize, or outline the assignment. Never output phrases like "We need to write..." or "Let's plan:". Begin immediately with narrative action.`,
+
     `# CORE STYLISTIC DIRECTIVES
 - SHOW, DO NOT TELL: Reveal character emotional states and lore through physical action beats, sensory textures, and subtext-laden dialogue rather than exposition.
 - AVOID AI CLICHÉS: Strictly ban overused AI filler words like "testament to", "tapestry", "beacon", "delve", "whisper of", "little did they know", or neat moralizing summaries.
@@ -176,14 +182,15 @@ ${adherenceInstruction}`
     systemBlocks.push(`# THINKING / BLUEPRINT DIRECTIVE
 Before outputting the prose story, you MUST first formulate your narrative strategy inside a <thinking>...</thinking> XML block.
 ${depthDetail}
-Keep the thinking concise and focused. Close the </thinking> tag, then immediately begin the story prose.`);
+Keep the thinking concise and focused. Close the </thinking> tag, then immediately begin the story prose with [STORY_START].`);
   }
 
   // Target Length & Closure Protocol
   systemBlocks.push(`# LENGTH & CLOSURE PROTOCOL
 - TARGET LENGTH: Approximately ${lengthConfig.words} words (maximum ceiling: ${Math.ceil(lengthConfig.words * 1.15)} words).
 - BUDGETING: Allocate roughly 20% to the hook/setup, 60% to core tension/conflict, and 20% to a natural scene closure or cliffhanger.
-- NATURAL CLOSURE: Plan the scene ending before writing. Ensure the final sentence delivers complete syntactic and dramatic closure. Never cut off mid-thought or mid-sentence.`);
+- NATURAL CLOSURE: Plan the scene ending before writing. Ensure the final sentence delivers complete syntactic and dramatic closure. Never cut off mid-thought or mid-sentence.
+- DELIMITER CLOSURE: Close the story prose with [STORY_END] immediately after the final sentence.`);
 
   // Story Bible injection
   const bibleParts = [];
@@ -206,7 +213,7 @@ ${bibleParts.join('\n\n')}`);
   // Branch Choices Protocol
   if (includeBranchChoices) {
     systemBlocks.push(`# INTERACTIVE BRANCHING PROTOCOL
-At the very conclusion of your story prose (after two blank lines), append an interactive plot fork formatted EXACTLY as follows:
+At the very conclusion of your generation (after [STORY_END] and two blank lines), append an interactive plot fork formatted EXACTLY as follows:
 
 [BRANCH_CHOICES]
 1. [Choice A Title]: A compelling, proactive action that pivots the narrative in a distinctive direction.
@@ -255,47 +262,248 @@ RULES FOR CHOICES:
 }
 
 /**
- * Parser for separating <thinking> block, story prose, and [BRANCH_CHOICES].
+ * Intelligent parser for separating <thinking> block, story prose, and [BRANCH_CHOICES].
+ * Enforces hard output boundary delimiters ([STORY_START] / [STORY_END]) and sanitizes
+ * residual meta preambles ("We need to write...", "Outline:...", "Let's plan...", etc.).
  */
 export function parseStoryStreamOutput(rawText) {
+  if (!rawText || typeof rawText !== 'string') {
+    return {
+      thinking: '',
+      prose: '',
+      branchChoices: []
+    };
+  }
+
   let thinking = '';
   let prose = rawText;
   let branchChoices = [];
 
-  // Extract <thinking>...</thinking>
-  const thinkingMatch = prose.match(/<thinking>([\s\S]*?)<\/thinking>/i);
-  if (thinkingMatch) {
-    thinking = thinkingMatch[1].trim();
-    prose = prose.replace(/<thinking>[\s\S]*?<\/thinking>/i, '').trim();
+  // Helper to parse choice lines
+  function parseChoiceLines(choiceBlock) {
+    if (!choiceBlock || typeof choiceBlock !== 'string') return [];
+    const lines = choiceBlock.split('\n').map(l => l.trim()).filter(Boolean);
+    const parsed = [];
+    for (const line of lines) {
+      if (/^(?:\d+[\.\)]|[-*•]|choice\s*\d+:?)/i.test(line)) {
+        const cleaned = line
+          .replace(/^(?:\d+[\.\)]|[-*•]|choice\s*\d+:?)\s*/i, '')
+          .replace(/^\*\*(.*?)\*\*/, '$1')
+          .trim();
+        const parts = cleaned.split(/:\s*(.+)| - \s*(.+)/);
+        const titlePart = parts[0] ? parts[0].replace(/[\[\]*]/g, '').trim() : '';
+        const descPart = (parts[1] || parts[2] || '').trim();
+        if (titlePart && descPart) {
+          parsed.push({ title: titlePart, description: descPart });
+        } else if (cleaned.length > 5) {
+          parsed.push({ title: cleaned.slice(0, 45).replace(/[\[\]*]/g, '').trim(), description: cleaned });
+        }
+      }
+    }
+    return parsed;
   }
 
-  // Extract [BRANCH_CHOICES]...[/BRANCH_CHOICES]
-  const branchMatch = prose.match(/\[BRANCH_CHOICES\]([\s\S]*?)\[\/BRANCH_CHOICES\]/i);
+  // 1. Extract <thinking>...</thinking>
+  const thinkingMatch = prose.match(/<thinking>([\s\S]*?)(?:<\/thinking>|$)/i);
+  if (thinkingMatch) {
+    thinking = thinkingMatch[1].trim();
+    prose = prose.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/i, '').trim();
+  }
+
+  // 2. Extract [BRANCH_CHOICES]...[/BRANCH_CHOICES]
+  const branchMatch = prose.match(/\[BRANCH_CHOICES\]([\s\S]*?)(?:\[\/BRANCH_CHOICES\]|$)/i);
   if (branchMatch) {
     const rawChoices = branchMatch[1].trim();
-    prose = prose.replace(/\[BRANCH_CHOICES\][\s\S]*?\[\/BRANCH_CHOICES\]/i, '').trim();
+    prose = prose.replace(/\[BRANCH_CHOICES\][\s\S]*?(?:\[\/BRANCH_CHOICES\]|$)/i, '').trim();
+    branchChoices = parseChoiceLines(rawChoices);
+  }
 
-    // Parse lines starting with 1., 2., 3., or -
-    const lines = rawChoices.split('\n').map(l => l.trim()).filter(Boolean);
-    branchChoices = lines.map(line => {
-      const cleaned = line.replace(/^(\d+\.|\-|\*)\s*/, '');
-      const parts = cleaned.split(/:\s*(.+)/);
-      if (parts.length >= 2) {
-        return {
-          title: parts[0].replace(/\[|\]/g, '').trim(),
-          description: parts[1].trim()
-        };
+  // Fallback: If [BRANCH_CHOICES] tags omitted, check content after [STORY_END]
+  if (branchChoices.length === 0 && /\[STORY_END\]/i.test(rawText)) {
+    const afterEnd = rawText.split(/\[STORY_END\]/i)[1];
+    if (afterEnd && afterEnd.trim()) {
+      branchChoices = parseChoiceLines(afterEnd);
+    }
+  }
+
+  // 3. Extract prose using hard output boundary delimiters [STORY_START] and [STORY_END]
+  if (/\[STORY_START\]/i.test(prose)) {
+    const parts = prose.split(/\[STORY_START\]/i);
+    const preStory = parts[0].trim();
+    if (preStory && !thinking) {
+      thinking = preStory;
+    }
+    const afterStart = parts.slice(1).join('[STORY_START]');
+    if (/\[STORY_END\]/i.test(afterStart)) {
+      prose = afterStart.split(/\[STORY_END\]/i)[0].trim();
+    } else {
+      prose = afterStart.trim();
+    }
+  } else if (/\[STORY_END\]/i.test(prose)) {
+    prose = prose.split(/\[STORY_END\]/i)[0].trim();
+  } else {
+    // Delimiters were omitted by model: separate meta-planning paragraphs from actual story prose
+    const metaPatterns = [
+      /^\s*(?:we need|we must|we will|we'll|let's|all right|outline|theme|narrative beats|guidelines|plan|chapter breakdown|here is the story|in chapter \d+:|we can pick|sensory anchor)/i,
+      /(?:words total|branching at end|guidelines: show|sensory anchor)/i
+    ];
+
+    const paragraphs = prose.split(/\n\s*\n/);
+    const metaParas = [];
+    const proseParas = [];
+    let storyBegan = false;
+
+    for (const para of paragraphs) {
+      const trimmed = para.trim();
+      if (!trimmed) continue;
+      if (!storyBegan) {
+        const isMeta = metaPatterns.some((p) => p.test(trimmed));
+        if (isMeta) {
+          metaParas.push(trimmed);
+          continue;
+        }
+        storyBegan = true;
       }
-      return {
-        title: cleaned.slice(0, 40),
-        description: cleaned
-      };
-    });
+      proseParas.push(para);
+    }
+
+    if (metaParas.length > 0 && !thinking) {
+      thinking = metaParas.join('\n\n');
+    }
+    prose = proseParas.join('\n\n');
+  }
+
+  // Fallback: If branch choices were trailing numbered list at the end of prose without tags
+  if (branchChoices.length === 0) {
+    const trailingChoicesMatch = prose.match(/(?:\n\s*\n|\n)(?:(?:1[\.\)]|[-*•]|Choice 1:?)\s+[^\n]+(?:\n\s*(?:[2345][\.\)]|[-*•]|Choice [2345]:?)\s+[^\n]+)+)\s*$/i);
+    if (trailingChoicesMatch) {
+      branchChoices = parseChoiceLines(trailingChoicesMatch[0]);
+      prose = prose.slice(0, trailingChoicesMatch.index).trim();
+    }
+  }
+
+  // 4. Strip any residual raw delimiters or tags from the prose
+  prose = prose
+    .replace(/\[\/?STORY_(?:START|END)\]/gi, '')
+    .replace(/\[\/?BRANCH_CHOICES\]/gi, '')
+    .replace(/<\/?thinking>/gi, '')
+    .trim();
+
+  return {
+    thinking: thinking.replace(/<\/?thinking>/gi, '').trim(),
+    prose,
+    branchChoices
+  };
+}
+
+/**
+ * Real-time streaming sanitizer to prevent delimiter leaks and meta-talk during token streaming.
+ */
+export function sanitizeStreamBuffer(rawText) {
+  if (!rawText || typeof rawText !== 'string') {
+    return { thinking: '', prose: '' };
+  }
+
+  let working = rawText;
+  let thinking = '';
+  let prose = '';
+
+  // 1. If currently opening a partial <thinking> tag at the start, withhold
+  const trimmed = working.trimStart();
+  if (trimmed.length > 0 && trimmed.length < 10 && '<thinking>'.startsWith(trimmed)) {
+    return { thinking: '', prose: '' };
+  }
+
+  // 2. Extract full <thinking>...</thinking>
+  const thinkingStart = working.indexOf('<thinking>');
+  if (thinkingStart !== -1) {
+    const thinkingEnd = working.indexOf('</thinking>');
+    if (thinkingEnd !== -1) {
+      thinking = working.slice(thinkingStart + 10, thinkingEnd).trim();
+      working = working.slice(thinkingEnd + 11);
+    } else {
+      // Still actively inside <thinking> block - withhold prose
+      thinking = working.slice(thinkingStart + 10).trim();
+      return { thinking, prose: '' };
+    }
+  }
+
+  // 3. Cut off interactive choices from live prose display
+  const branchIdx = working.indexOf('[BRANCH_CHOICES]');
+  if (branchIdx !== -1) {
+    working = working.slice(0, branchIdx);
+  }
+
+  // 4. Check for [STORY_START]
+  const storyStartIdx = working.indexOf('[STORY_START]');
+  if (storyStartIdx !== -1) {
+    const preText = working.slice(0, storyStartIdx).trim();
+    if (preText && !thinking) {
+      thinking = preText;
+    }
+    let afterStart = working.slice(storyStartIdx + 13);
+    const storyEndIdx = afterStart.indexOf('[STORY_END]');
+    if (storyEndIdx !== -1) {
+      prose = afterStart.slice(0, storyEndIdx);
+    } else {
+      prose = afterStart;
+    }
+  } else {
+    // If working starts with partial [STORY_START] delimiter, withhold
+    const workingTrimmed = working.trimStart();
+    if (workingTrimmed.length > 0 && workingTrimmed.length < 13 && '[STORY_START]'.startsWith(workingTrimmed)) {
+      return { thinking, prose: '' };
+    }
+
+    // Separate leading meta-planning paragraphs from prose during streaming
+    const metaPatterns = [
+      /^\s*(?:we need|we must|we will|we'll|let's|all right|outline|theme|narrative beats|guidelines|plan|chapter breakdown|here is the story|in chapter \d+:|we can pick|sensory anchor)/i,
+      /(?:words total|branching at end|guidelines: show|sensory anchor)/i
+    ];
+
+    const paragraphs = working.split(/\n\s*\n/);
+    const metaParas = [];
+    const proseParas = [];
+    let storyBegan = false;
+
+    for (const para of paragraphs) {
+      const pTrim = para.trim();
+      if (!pTrim) continue;
+      if (!storyBegan) {
+        const isMeta = metaPatterns.some((p) => p.test(pTrim));
+        if (isMeta) {
+          metaParas.push(pTrim);
+          continue;
+        }
+        storyBegan = true;
+      }
+      proseParas.push(para);
+    }
+
+    if (metaParas.length > 0 && !thinking) {
+      thinking = metaParas.join('\n\n');
+    }
+    prose = proseParas.join('\n\n');
+  }
+
+  // Strip raw delimiter tags
+  prose = prose
+    .replace(/\[\/?STORY_(?:START|END)\]/gi, '')
+    .replace(/\[\/?BRANCH_CHOICES\]/gi, '')
+    .replace(/<\/?thinking>/gi, '');
+
+  // Strip trailing partial delimiters while streaming (e.g. "[", "[STORY", "[STORY_", "</think")
+  for (const tag of ['[STORY_START]', '[STORY_END]', '[BRANCH_CHOICES]', '[/BRANCH_CHOICES]', '</thinking>']) {
+    for (let len = tag.length - 1; len >= 1; len--) {
+      if (prose.endsWith(tag.slice(0, len))) {
+        prose = prose.slice(0, -len);
+        break;
+      }
+    }
   }
 
   return {
     thinking,
-    prose,
-    branchChoices
+    prose: prose.trimStart()
   };
 }

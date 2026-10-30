@@ -27,6 +27,115 @@ const DEFAULT_BIBLE = {
   canonNotes: ''
 };
 
+function sanitizeClientStreamBuffer(rawBuffer) {
+  if (!rawBuffer || typeof rawBuffer !== 'string') {
+    return { thinking: '', prose: '' };
+  }
+
+  let working = rawBuffer;
+  let thinking = '';
+  let prose = '';
+
+  // 1. If currently opening a partial <thinking> tag at the start, withhold
+  const trimmed = working.trimStart();
+  if (trimmed.length > 0 && trimmed.length < 10 && '<thinking>'.startsWith(trimmed)) {
+    return { thinking: '', prose: '' };
+  }
+
+  // 2. Full <thinking>...</thinking> extraction
+  const thinkingStart = working.indexOf('<thinking>');
+  if (thinkingStart !== -1) {
+    const thinkingEnd = working.indexOf('</thinking>');
+    if (thinkingEnd !== -1) {
+      thinking = working.slice(thinkingStart + 10, thinkingEnd).trim();
+      working = working.slice(thinkingEnd + 11);
+    } else {
+      // Still actively streaming thinking: withhold story tokens
+      thinking = working.slice(thinkingStart + 10).trim();
+      return { thinking, prose: '' };
+    }
+  }
+
+  // 3. Interactive branch choices isolation
+  const branchIdx = working.indexOf('[BRANCH_CHOICES]');
+  if (branchIdx !== -1) {
+    working = working.slice(0, branchIdx);
+  }
+
+  // 4. Output boundary delimiter isolation ([STORY_START] / [STORY_END])
+  const storyStartIdx = working.indexOf('[STORY_START]');
+  if (storyStartIdx !== -1) {
+    const preText = working.slice(0, storyStartIdx).trim();
+    if (preText && !thinking) {
+      thinking = preText;
+    }
+    let afterStart = working.slice(storyStartIdx + 13);
+    const storyEndIdx = afterStart.indexOf('[STORY_END]');
+    if (storyEndIdx !== -1) {
+      prose = afterStart.slice(0, storyEndIdx);
+    } else {
+      prose = afterStart;
+    }
+  } else {
+    // If working starts with partial [STORY_START] delimiter, withhold
+    const workingTrimmed = working.trimStart();
+    if (workingTrimmed.length > 0 && workingTrimmed.length < 13 && '[STORY_START]'.startsWith(workingTrimmed)) {
+      return { thinking, prose: '' };
+    }
+
+    // Separate leading meta-planning paragraphs from prose during client streaming
+    const metaPatterns = [
+      /^\s*(?:we need|we must|we will|we'll|let's|all right|outline|theme|narrative beats|guidelines|plan|chapter breakdown|here is the story|in chapter \d+:|we can pick|sensory anchor)/i,
+      /(?:words total|branching at end|guidelines: show|sensory anchor)/i
+    ];
+
+    const paragraphs = working.split(/\n\s*\n/);
+    const metaParas = [];
+    const proseParas = [];
+    let storyBegan = false;
+
+    for (const para of paragraphs) {
+      const pTrim = para.trim();
+      if (!pTrim) continue;
+      if (!storyBegan) {
+        const isMeta = metaPatterns.some((p) => p.test(pTrim));
+        if (isMeta) {
+          metaParas.push(pTrim);
+          continue;
+        }
+        storyBegan = true;
+      }
+      proseParas.push(para);
+    }
+
+    if (metaParas.length > 0 && !thinking) {
+      thinking = metaParas.join('\n\n');
+    }
+    prose = proseParas.join('\n\n');
+  }
+
+  // Strip raw delimiter tags
+  prose = prose
+    .replace(/\[\/?STORY_(?:START|END)\]/gi, '')
+    .replace(/\[\/?BRANCH_CHOICES\]/gi, '')
+    .replace(/<\/?thinking>/gi, '');
+
+  // Strip trailing partial delimiters during live streaming
+  for (const tag of ['[STORY_START]', '[STORY_END]', '[BRANCH_CHOICES]', '[/BRANCH_CHOICES]', '</thinking>']) {
+    for (let len = tag.length - 1; len >= 1; len--) {
+      if (prose.endsWith(tag.slice(0, len))) {
+        prose = prose.slice(0, -len);
+        break;
+      }
+    }
+  }
+
+  return {
+    thinking,
+    prose: prose.trimStart()
+  };
+}
+
 export function StoryProvider({ children }) {
   const [prompt, setPrompt] = useState('');
   const [genre, setGenre] = useState('custom');
@@ -234,13 +343,16 @@ export function StoryProvider({ children }) {
       setStory('');
       setThinking('');
       setChapters([]);
+    } else {
+      setStory('');
+      setThinking('');
     }
 
     abortControllerRef.current = new AbortController();
     streamStartTimeRef.current = Date.now();
     tokenCountRef.current = 0;
 
-    let accumulatedProse = '';
+    let rawAccumulatedStream = '';
     let accumulatedThinking = '';
 
     const headers = {
@@ -303,9 +415,11 @@ export function StoryProvider({ children }) {
             const parsed = JSON.parse(dataText);
 
             if (eventType === 'start') {
+              // Started generation
+            } else if (eventType === 'provider' || (eventType === 'chunk' && parsed.type === 'provider')) {
               setTelemetry((prev) => ({
                 ...prev,
-                activeProvider: parsed.meta?.genre || prev.activeProvider
+                activeProvider: parsed.provider || prev.activeProvider
               }));
             } else if (eventType === 'chunk') {
               tokenCountRef.current += 1;
@@ -314,16 +428,23 @@ export function StoryProvider({ children }) {
 
               if (parsed.type === 'provider') {
                 setTelemetry((prev) => ({ ...prev, activeProvider: parsed.provider, tokensPerSec: tps }));
-              } else if (parsed.type === 'prose') {
-                accumulatedProse += parsed.text;
-                setStory(accumulatedProse);
-                setTelemetry((prev) => ({ ...prev, tokensPerSec: tps }));
               } else if (parsed.type === 'thinking') {
                 accumulatedThinking += parsed.text;
                 setThinking(accumulatedThinking);
+              } else if (parsed.type === 'prose') {
+                rawAccumulatedStream += parsed.text;
+                const sanitized = sanitizeClientStreamBuffer(rawAccumulatedStream);
+                if (sanitized.thinking && !accumulatedThinking) {
+                  setThinking(sanitized.thinking);
+                }
+                setStory(sanitized.prose);
+                setTelemetry((prev) => ({ ...prev, tokensPerSec: tps }));
               }
             } else if (eventType === 'complete') {
-              setStory(parsed.prose || accumulatedProse);
+              const sanitizedStream = sanitizeClientStreamBuffer(rawAccumulatedStream);
+              const finalProse = (parsed.prose || sanitizedStream.prose || '').trim();
+
+              setStory(finalProse);
               if (parsed.thinking) setThinking(parsed.thinking);
               if (parsed.branchChoices?.length) setBranchChoices(parsed.branchChoices);
 
@@ -331,7 +452,7 @@ export function StoryProvider({ children }) {
               const newChapter = {
                 number: chapters.length + 1,
                 title: `Chapter ${chapters.length + 1}`,
-                content: parsed.prose || accumulatedProse,
+                content: finalProse,
                 timestamp: new Date().toISOString()
               };
 

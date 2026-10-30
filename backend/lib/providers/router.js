@@ -25,8 +25,8 @@ export async function routeStoryStream({
   if (byok.groq) {
     providers.push({
       id: 'groq-byok',
-      name: 'Groq (BYOK: Llama 3.3 70B)',
-      execute: (p) => streamGroq({ ...p, apiKey: byok.groq })
+      name: 'Groq (BYOK: Qwen 3.8 27B)',
+      execute: (p) => streamGroq({ ...p, apiKey: byok.groq, model: 'qwen/qwen3.8-27b' })
     });
   }
   if (byok.gemini) {
@@ -55,8 +55,8 @@ export async function routeStoryStream({
   if (process.env.GROQ_API_KEY) {
     providers.push({
       id: 'groq-server',
-      name: 'Groq Llama 3.3 70B (Free Tier)',
-      execute: (p) => streamGroq({ ...p, apiKey: process.env.GROQ_API_KEY })
+      name: 'Groq (High-Speed Qwen 3.8 27B)',
+      execute: (p) => streamGroq({ ...p, apiKey: process.env.GROQ_API_KEY, model: 'qwen/qwen3.8-27b' })
     });
   }
 

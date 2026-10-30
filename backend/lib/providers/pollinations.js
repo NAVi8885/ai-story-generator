@@ -20,7 +20,7 @@ export async function streamPollinations({
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
       ],
-      model: 'openai-fast',
+      model: 'openai',
       temperature: parameters.temperature ?? 0.8,
       stream: true
     }),
