@@ -170,3 +170,4 @@ export function getActiveProviders() {
   active.push('Zero-Auth Fast Engine (Pollinations)');
   return active;
 }
+
