@@ -118,10 +118,20 @@ app.post('/api/generate/stream', async (req, res) => {
 
   const abortController = new AbortController();
 
+  // Send periodic SSE keep-alive comments every 12s to prevent client body timeout
+  const keepAliveTimer = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(': keep-alive\n\n');
+    }
+  }, 12000);
+
   // Handle client disconnection (user abort / tab close)
-  req.on('close', () => {
-    console.log(`[Stream Connection] Client closed connection. Aborting upstream generation.`);
-    abortController.abort();
+  res.on('close', () => {
+    clearInterval(keepAliveTimer);
+    if (!res.writableEnded) {
+      console.log(`[Stream Connection] Client disconnected prematurely. Aborting upstream generation.`);
+      abortController.abort();
+    }
   });
 
   const sendEvent = (event, data) => {
@@ -177,8 +187,10 @@ app.post('/api/generate/stream', async (req, res) => {
     });
 
     res.write('data: [DONE]\n\n');
+    clearInterval(keepAliveTimer);
     res.end();
   } catch (error) {
+    clearInterval(keepAliveTimer);
     if (abortController.signal.aborted) {
       console.log('[Stream Connection] Request successfully halted by client.');
       return;

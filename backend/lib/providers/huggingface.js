@@ -30,6 +30,14 @@ export async function streamHuggingFace({
 }) {
   const client = getHFClient(apiKey);
 
+  // Set 5-second timeout for HF handshake to avoid stalling before fallback
+  const hfTimeoutController = new AbortController();
+  const timeoutId = setTimeout(() => hfTimeoutController.abort(), 6000);
+
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, hfTimeoutController.signal])
+    : hfTimeoutController.signal;
+
   try {
     const stream = client.chatCompletionStream({
       model,
@@ -43,15 +51,18 @@ export async function streamHuggingFace({
     });
 
     for await (const chunk of stream) {
-      if (signal?.aborted) break;
+      clearTimeout(timeoutId);
+      if (combinedSignal?.aborted) break;
       const content = chunk.choices?.[0]?.delta?.content;
       if (content) {
         onChunk({ type: 'prose', text: content });
       }
     }
 
+    clearTimeout(timeoutId);
     onChunk({ type: 'done' });
   } catch (error) {
+    clearTimeout(timeoutId);
     const err = new Error(`Hugging Face inference error: ${error.message}`);
     err.status = error.status || 500;
     throw err;
@@ -77,3 +88,4 @@ export async function generateStory(userPrompt, options = {}) {
 
   return response.choices?.[0]?.message?.content || '';
 }
+
