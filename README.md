@@ -1,233 +1,148 @@
-# AI Story Generator
+# MythosAI — Zero-Cost Interactive AI Story Generator
 
-## Transform short prompts into elaborate narratives with AI
-
-A production-ready web application that leverages Hugging Face's advanced LLMs to expand short story prompts into highly detailed, coherent, and stylistically consistent narratives. Features a premium "Liquid Glass" UI aesthetic.
+> Transform story seeds into rich, multi-chapter sagas with granular narrative sliders, real-time token streaming, and an intelligent zero-cost inference waterfall.
 
 ---
 
-## 🚀 Features
+## 🌟 Key Highlights
 
-- **Advanced Prompt Engineering**: Custom-built system prompt ensures narrative consistency, sensory detail, and logical continuity
-- **Hugging Face Integration**: Uses Mixtral-8x7B-Instruct for high-quality story generation
-- **Premium UI**: Liquid Glass design with glassmorphism, fluid animations, and micro-interactions
-- **Responsive Design**: Works seamlessly on desktop and tablet devices
-- **Error Handling**: Comprehensive validation and user-friendly error messages
-- **Accessibility**: WCAG AA compliant with keyboard navigation and reduced motion support
-
----
-
-## 🛠️ Tech Stack
-
-**Frontend**:
-- React 18
-- Vite (dev server & build tool)
-- Vanilla CSS (Liquid Glass design system)
-
-**Backend**:
-- Node.js + Express
-- @huggingface/inference SDK
-- CORS middleware
-
----
-
-## 📋 Prerequisites
-
-- Node.js 18+ and npm
-- Hugging Face API token (get one at https://huggingface.co/settings/tokens)
+- **Zero-Cost Multi-Provider Inference Waterfall**:
+  - Automatically rotates through free-tier providers: **Groq** (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`), **Google Gemini Flash** (`gemini-1.5-flash`), **OpenRouter** (`:free` models), and **Hugging Face**.
+  - Built-in **Zero-Auth Fast Engine**: Runs immediately out-of-the-box with **no credit card, no billing, and zero API keys required**.
+  - Automatic `HTTP 429` rate-limit detection and seamless provider failover.
+  - Optional **BYOK (Bring Your Own Key)** settings drawer so visitors can bypass public rate limits.
+- **Granular Narrative Control Matrix**:
+  - **Creativity Dial (`0.2 – 1.4`)**: Maps to LLM `temperature`, `top_p`, and figurative vs. literal prose directives.
+  - **Tone & Atmosphere (5 stops)**: Whimsical, Light, Balanced, Gritty, Dark Grimdark.
+  - **Pacing & Detail Density (5 stops)**: Fast Action, Brisk, Dynamic, Atmospheric, Slow-Burn Lore.
+  - **Prompt Strictness (`10% – 100%`)**: Enforces canon fidelity vs. creative extrapolation.
+  - **Target Length (4 stops)**: Flash (~350w), Short (~650w), Standard (~1.2kw), Chapter (~2kw) with natural sentence boundary closure.
+  - **Thinking / CoT Depth (4 stops)**: Generates a structured narrative blueprint (`<thinking>`) before prose drafting.
+  - **Genre Presets**: One-click configuration for Fantasy, Sci-Fi, Horror, Mystery/Noir, Romance, Cyberpunk, and Custom.
+- **High-Leverage Differentiator Features**:
+  - **Real-Time Token Streaming**: SSE streaming with live telemetry (Words, Reading Time, Tokens/sec, Active Engine).
+  - **Stop Generating Button**: Clean `AbortController` cancellation that halts the stream while preserving partial text.
+  - **Interactive Story Branching**: Generates 2–3 distinct plot-fork choices at the end of each segment to steer multi-chapter sagas.
+  - **Story Bible & Context Lock**: Slide-out drawer to pin character rosters, world rules/magic laws, and canon history into the prompt payload.
+  - **Narrative Blueprint View**: Tab toggle between polished story prose and the model's internal Chain-of-Thought outline.
+  - **Enhance Premise Button**: Auto-expands short or vague prompts into sensory narrative setups.
+  - **Zero-Database Persistence & Export**: Auto-saves story chronicle to `localStorage` and exports to **Markdown (`.md`)** or **JSON (`.json`)**.
+- **Liquid Glass Design System**:
+  - Deep atmospheric background with animated ambient orbs.
+  - Frosted glassmorphism panels, glowing slider tracks, responsive segmented buttons, and WCAG-compliant contrast.
 
 ---
 
-## ⚙️ Setup Instructions
+## 🏗️ Architecture
 
-### 1. Clone or navigate to the project
-
-```bash
-cd ai-story-generator
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        MythosAI (React 18 + Vite)                      │
+│                                                                        │
+│  ┌────────────────────────┐  ┌──────────────────────────────────────┐  │
+│  │ NarrativeControlPanel  │  │ StoryBibleModal (Context Lock)       │  │
+│  │ - 7 Param Sliders      │  │ - Characters, World Rules, Canon     │  │
+│  │ - Genre Preset Chips   │  └──────────────────────────────────────┘  │
+│  └────────────────────────┘                                            │
+│  ┌────────────────────────┐  ┌──────────────────────────────────────┐  │
+│  │ PromptInput + Expander │  │ StoryViewer (Streaming + Branches)   │  │
+│  │ - "✨ Enhance Premise" │  │ - Telemetry: WPM, reading time, tok/s│  │
+│  │ - Quick Spark Chips    │  │ - Dual Tabs: Prose vs. Blueprint     │  │
+│  └────────────────────────┘  │ - 2-3 Interactive Chapter Fork Cards │  │
+│                              │ - Export (Markdown / JSON) & History │  │
+│                              └──────────────────────────────────────┘  │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │ SSE POST /api/generate/stream
+                                     │ (AbortController cancellation)
+                                     ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                       Express 4 Backend (Node.js)                      │
+│                                                                        │
+│  ┌────────────────────────┐  ┌──────────────────────────────────────┐  │
+│  │ PromptCompiler Layer   │  │ Multi-Provider Inference Router      │  │
+│  │ - Sliders -> Prompts   │  │ 1. Groq (Llama 3.3 70B & 8B)         │  │
+│  │ - Conflict normalizer  │  │ 2. Google Gemini Flash Free Tier     │  │
+│  │ - CoT thinking blocks  │  │ 3. OpenRouter :free models           │  │
+│  │ - Story Bible context  │  │ 4. Hugging Face Router               │  │
+│  │ - Branch choices tag   │  │ 5. Zero-Auth Fast Engine (Zero Keys) │  │
+│  └────────────────────────┘  └──────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Install backend dependencies
+---
+
+## ⚡ Quick Start
+
+### 1. Prerequisites
+- **Node.js 18+** installed (`node -v`)
+
+### 2. Install Dependencies
 
 ```bash
+# Backend dependencies
 cd backend
 npm install
-```
 
-### 3. Install frontend dependencies
-
-```bash
+# Frontend dependencies
 cd ../frontend
 npm install
 ```
 
-### 4. Configure environment variables
+### 3. Configure Environment (Optional)
+The application works **immediately with zero keys set** via the built-in fast engine.
 
-Copy `.env.example` to `.env` in the root directory:
+To connect additional free-tier cloud providers, copy `.env.example` to `.env`:
 
 ```bash
-cd ..
 cp .env.example .env
 ```
 
-Edit `.env` and add your Hugging Face API token:
-
-```
-HUGGINGFACE_API_KEY=hf_your_actual_token_here
+Available free-tier keys (no credit card required):
+```env
 PORT=3001
-HF_MODEL=mistralai/Mixtral-8x7B-Instruct-v0.1
 FRONTEND_URL=http://localhost:5173
+
+# Groq Free Tier: https://console.groq.com/
+# GROQ_API_KEY=gsk_your_key_here
+
+# Google Gemini Free Tier: https://aistudio.google.com/
+# GEMINI_API_KEY=AIzaSy_your_key_here
+
+# OpenRouter Free Tier: https://openrouter.ai/
+# OPENROUTER_API_KEY=sk-or-v1-your_key_here
 ```
 
-### 5. Start the backend server
+### 4. Start the Application
 
+In terminal 1 (Backend API):
 ```bash
 cd backend
 npm start
 ```
+*API runs on `http://localhost:3001`*
 
-You should see:
-```
-════════════════════════════════════════════════
-🚀 AI Story Generator API Server
-📡 Running on: http://localhost:3001
-...
-════════════════════════════════════════════════
-```
-
-### 6. Start the frontend (new terminal)
-
+In terminal 2 (Frontend UI):
 ```bash
 cd frontend
 npm run dev
 ```
-
-### 7. Open the application
-
-Navigate to **http://localhost:5173** in your browser.
+*UI runs on `http://localhost:5173`*
 
 ---
 
-## 🎨 Architecture
+## 🎛️ Narrative Parameter Matrix
 
-```
-┌─────────────┐         ┌──────────────┐         ┌─────────────────────┐
-│   Browser   │────────▶│    Express   │────────▶│  Hugging Face API   │
-│  (React UI) │   POST  │   Server     │  System │  (Mixtral-8x7B)     │
-│  Port 5173  │◀────────│  Port 3001   │◀────────│                     │
-└─────────────┘  Story  └──────────────┘  Prompt └─────────────────────┘
-```
-
-### Flow:
-1. User enters a short prompt in the React frontend
-2. Frontend sends POST request to `/api/generate`
-3. Backend constructs advanced system prompt using prompt engineering logic
-4. Backend calls Hugging Face Inference API
-5. Elaborated story is returned to frontend
-6. Story is displayed in premium Liquid Glass UI
+| Slider | UI Range | Model Hyperparameter | System Prompt Compilation Directive |
+|---|---|---|---|
+| **Creativity** | `0.2 – 1.4` | `temperature: 0.2 - 1.3`<br>`top_p: 0.85 - 0.98` | Directs figurative language density, metaphor boldness, and lexical variety. |
+| **Tone** | 5 segmented stops | Style directive | Shifts vocabulary from lyrical warmth to visceral textures (rust, bone, moral ambiguity). |
+| **Pacing** | 5 segmented stops | Syntax constraints | Fast: short punchy sentences, high verb velocity.<br>Slow: lingering sensory layering and world lore. |
+| **Strictness** | `10% – 100%` | Constraint weights | High: strict fidelity to premise bounds.<br>Low: creative liberties and unexpected plot twists. |
+| **Target Length** | 4 stops | `max_tokens: 750 - 3500` | Word budget: 20% setup, 60% conflict, 20% natural closure. Guarantees complete sentence landing. |
+| **Thinking Depth** | 4 stops | `<thinking>` XML block | Directs the model to output a plot beat outline before drafting prose. |
 
 ---
 
-## 🧠 Prompt Engineering
+## 📄 License
 
-The system uses a sophisticated prompt structure that enforces:
-
-- **Narrative Consistency**: Maintains timeline, world rules, and character behavior
-- **Sensory Detail**: Expands scenes with sight, sound, texture, and atmosphere
-- **Logical Continuity**: Ensures coherent scene transitions and plot progression
-- **Stylistic Control**: "Show, don't tell" approach with vivid but controlled language
-
-See `backend/lib/promptEngineering.js` for the full system prompt.
-
----
-
-## 🔧 Customization
-
-### Change the AI Model
-
-Edit `.env` and update the `HF_MODEL` variable:
-
-```
-HF_MODEL=mistralai/Mistral-7B-Instruct-v0.2
-```
-
-### Adjust Generation Parameters
-
-Edit `backend/lib/huggingface.js`:
-
-```javascript
-parameters: {
-  max_new_tokens: 2048,   // Longer stories
-  temperature: 0.75,       // 0.1-1.0 (lower = more focused)
-  top_p: 0.9              // 0.1-1.0 (nucleus sampling)
-}
-```
-
----
-
-## 📁 Project Structure
-
-```
-ai-story-generator/
-├── backend/
-│   ├── lib/
-│   │   ├── huggingface.js          # HF API client
-│   │   └── promptEngineering.js    # System prompt logic
-│   ├── server.js                   # Express server
-│   └── package.json
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── PromptInput.jsx
-│   │   │   ├── LoadingIndicator.jsx
-│   │   │   └── StoryOutput.jsx
-│   │   ├── App.jsx                 # Main component
-│   │   ├── App.css                 # Liquid Glass design system
-│   │   ├── index.css               # Global styles
-│   │   └── main.jsx                # Entry point
-│   ├── index.html
-│   ├── vite.config.js
-│   └── package.json
-├── .env                            # Environment variables (gitignored)
-├── .env.example                    # Template
-└── README.md
-```
-
----
-
-## 🐛 Troubleshooting
-
-**Backend won't start**:
-- Ensure `.env` file exists in root directory
-- Verify `HUGGINGFACE_API_KEY` is set correctly
-- Check that port 3001 is not already in use
-
-**Frontend shows network error**:
-- Ensure backend is running on port 3001
-- Check browser console for CORS errors
-
-**Story generation fails**:
-- Verify your Hugging Face API key has access to Mixtral model
-- Check if you've hit rate limits (free tier has limits)
-- Try a different model if Mixtral is unavailable
-
-**Liquid Glass effects not showing**:
-- Ensure you're using a modern browser with backdrop-filter support
-- Clear browser cache and reload
-
----
-
-## 📝 License
-
-This project is provided as-is for educational and commercial use.
-
----
-
-## 🙏 Credits
-
-- **UI Design**: Inspired by modern glassmorphism trends
-- **AI Model**: Hugging Face Mixtral-8x7B-Instruct
-- **Fonts**: Inter by Rasmus Andersson (Google Fonts)
-
----
-
-**Built with ❤️ as a production-ready AI story generation tool**
+MIT License. Designed and built as a production-ready, zero-cost AI showcase application.
