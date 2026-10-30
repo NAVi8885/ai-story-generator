@@ -104,7 +104,9 @@ export default function StoryViewer() {
                 onClick={() => setActiveTab('thinking')}
               >
                 🧠 Narrative Blueprint
-                <span className="tab-pill">CoT</span>
+                <span className={`tab-pill ${isGenerating && !story ? 'pulsing' : ''}`}>
+                  {isGenerating && !story ? '● Active' : 'CoT'}
+                </span>
               </button>
             )}
           </div>
@@ -146,6 +148,24 @@ export default function StoryViewer() {
         <div className="tab-content-area">
           {activeTab === 'prose' ? (
             <div className="prose-container">
+              {!story && isGenerating && (
+                <div className="thinking-planning-banner glass-panel">
+                  <div className="planning-spinner" />
+                  <div className="planning-text">
+                    <strong>Plot Architect is formulating narrative beats & characters...</strong>
+                    <p>The reasoning model is drafting the plot structure before prose generation begins.</p>
+                  </div>
+                  {thinking && (
+                    <button
+                      className="view-blueprint-btn"
+                      onClick={() => setActiveTab('thinking')}
+                    >
+                      View Live Blueprint →
+                    </button>
+                  )}
+                </div>
+              )}
+
               {chapters.length > 1 && (
                 <div className="chapters-archive">
                   {chapters.slice(0, -1).map((ch, idx) => (
