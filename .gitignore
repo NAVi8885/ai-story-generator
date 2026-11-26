@@ -1,19 +1,21 @@
 # Dependencies
 node_modules/
 
-# Environment variables
+# Environment variables (keep template tracked)
 .env
-.env.local
+.env.*
+!.env.example
 
 # Build outputs
 dist/
 build/
 *.local
 
-# Logs
+# Logs & coverage
 logs/
 *.log
 npm-debug.log*
+coverage/
 
 # Editor directories
 .vscode/
@@ -25,6 +27,7 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Temporary files
+# Temporary & agent scratch directories
 *.tmp
 .cache/
+.agents/
