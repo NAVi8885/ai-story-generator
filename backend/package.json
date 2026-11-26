@@ -1,12 +1,13 @@
 {
   "name": "ai-story-generator-backend",
   "version": "1.0.0",
-  "description": "Express backend for AI story generator with Hugging Face integration",
+  "description": "Express MVC backend for Mythos Studio with multi-provider inference waterfall, narrative compiler, image generation, and prose diagnostics",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/story-isolation.test.js"
+    "test": "node --test tests/*.test.js",
+    "smoke": "node verify-full-pipeline.js"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.10",

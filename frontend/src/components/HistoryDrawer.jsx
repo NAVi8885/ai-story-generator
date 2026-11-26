@@ -1,64 +1,96 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { History, X, ArrowRight, Trash2, Clock, BookOpen } from 'lucide-react';
 import { useStory } from '../context/StoryContext';
 
 export default function HistoryDrawer({ isOpen, onClose }) {
   const { history, restoreFromHistory, deleteHistoryItem } = useStory();
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="drawer-content glass-panel" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="drawer-content studio-panel" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <div className="title-area">
-            <span className="modal-icon">📚</span>
-            <h2>Story Chronicle & History</h2>
+          <div className="modal-title-group">
+            <History className="modal-icon-svg" size={18} />
+            <h2>Chronicle & Archives</h2>
+            <span className="count-pill">{history.length}</span>
           </div>
-          <button className="close-btn" onClick={onClose} aria-label="Close history">✕</button>
+          <button
+            type="button"
+            className="modal-close-btn"
+            onClick={onClose}
+            aria-label="Close chronicle (Esc)"
+          >
+            <X size={16} />
+          </button>
         </div>
 
         <p className="modal-subtitle">
-          Stories and multi-chapter sagas saved locally in your browser.
+          Local studio archive of generated chapters and multi-part narrative sagas.
         </p>
 
         {history.length === 0 ? (
-          <div className="drawer-empty">
-            <p>No saved stories yet. Generate a narrative and click <strong>💾 Save</strong> to preserve it here.</p>
+          <div className="drawer-empty-state">
+            <BookOpen size={24} className="empty-drawer-icon" />
+            <p>No saved stories yet.</p>
+            <span className="empty-sub">
+              Generate a chapter and click <strong>Save</strong> on the reader toolbar to archive it here.
+            </span>
           </div>
         ) : (
-          <div className="history-list">
+          <div className="history-entries-list">
             {history.map((item) => (
-              <div key={item.id} className="history-item glass-panel">
-                <div className="item-meta">
-                  <span className="history-genre-badge">{item.genre || 'Story'}</span>
-                  <span className="history-date">
-                    {new Date(item.timestamp).toLocaleDateString()} {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                  <span className="history-words">{item.wordCount || 0} words</span>
+              <div key={item.id} className="history-entry-card">
+                <div className="history-entry-meta">
+                  <span className="history-genre-pill">{item.genre || 'Prose'}</span>
+                  <div className="history-time-wrap">
+                    <Clock size={11} />
+                    <span>
+                      {new Date(item.timestamp).toLocaleDateString()} {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <span className="history-words-count">{item.wordCount || 0} words</span>
                   {item.chapters?.length > 1 && (
                     <span className="history-chapters-badge">{item.chapters.length} Chapters</span>
                   )}
                 </div>
 
-                <div className="history-title">{item.title}</div>
-                <p className="history-snippet">{item.story.slice(0, 140)}...</p>
+                <h4 className="history-entry-title">{item.title}</h4>
+                <p className="history-snippet">
+                  {item.story ? item.story.slice(0, 140) + '...' : 'No prose content.'}
+                </p>
 
-                <div className="history-actions">
+                <div className="history-card-actions">
                   <button
-                    className="history-action-btn load-btn"
+                    type="button"
+                    className="history-restore-btn"
                     onClick={() => {
                       restoreFromHistory(item.id);
                       onClose();
                     }}
                   >
-                    Restore & Continue →
+                    <span>Restore into Studio</span>
+                    <ArrowRight size={13} />
                   </button>
                   <button
-                    className="history-action-btn delete-btn"
+                    type="button"
+                    className="history-delete-btn"
                     onClick={() => deleteHistoryItem(item.id)}
-                    title="Delete story"
+                    title="Delete from chronicle"
+                    aria-label="Delete story"
                   >
-                    🗑️
+                    <Trash2 size={13} />
                   </button>
                 </div>
               </div>
@@ -69,4 +101,3 @@ export default function HistoryDrawer({ isOpen, onClose }) {
     </div>
   );
 }
-

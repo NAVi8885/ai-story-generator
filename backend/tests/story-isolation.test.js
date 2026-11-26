@@ -93,8 +93,72 @@ console.log('\n--- SUITE 4: Stream Buffer Delimiter Withholding ---');
   assert(trailingTest.prose === 'The blade was red-hot.', 'Trailing partial [STOR is withheld');
 }
 
+console.log('\n--- SUITE 5: Advanced Isolation - Residual Preambles & Legitimate Prose Protection ---');
+{
+  // 1. Residual preamble INSIDE [STORY_START] ... [STORY_END]
+  const preambleInsideDelimiters = `[STORY_START]
+We need to write a story about Evan reincarnated in Rome.
+Outline:
+1. Gladiators
+2. The forge
+
+Here is the story:
+
+The heat in the fabrica was an unbearable physical weight.
+[STORY_END]`;
+  const parsedInside = parseStoryStreamOutput(preambleInsideDelimiters);
+  assert(parsedInside.prose.startsWith('The heat in the fabrica was an unbearable physical weight.'), 'Strips residual preamble inside [STORY_START]');
+  assert(!parsedInside.prose.includes('We need to write'), 'Prose is free of "We need to write" inside delimiters');
+  assert(!parsedInside.prose.includes('Outline:'), 'Prose is free of "Outline:" inside delimiters');
+  assert(!parsedInside.prose.includes('Here is the story:'), 'Prose is free of "Here is the story:" inside delimiters');
+  assert(parsedInside.thinking.includes('We need to write'), 'Preamble inside delimiters routed to thinking');
+
+  // 2. Untagged output with multiple preambles matching ^(we need to write|outline:|let's plan|here is the story)
+  const untaggedMultiPreamble = `We need to write a story about Marcus.
+
+Outline:
+1. Opening beat
+2. Climax
+
+Let's plan: We will focus on sensory textures.
+
+The rain beat against the marble pillars.`;
+  const parsedUntaggedMulti = parseStoryStreamOutput(untaggedMultiPreamble);
+  assert(parsedUntaggedMulti.prose === 'The rain beat against the marble pillars.', 'Strips multiple untagged preambles matching requirement regex');
+  assert(parsedUntaggedMulti.thinking.includes('We need to write'), 'Multi-preamble captured in thinking');
+
+  // 3. Legitimate prose starting with "All right..." MUST NOT BE STRIPPED
+  const legitimateAllRight = `[STORY_START]
+All right, Evan thought as he looked at the arena. This was going to be difficult.
+
+The cold sand shifted under his sandals.
+[STORY_END]`;
+  const parsedAllRight = parseStoryStreamOutput(legitimateAllRight);
+  assert(parsedAllRight.prose.startsWith('All right, Evan thought'), 'Protects legitimate prose starting with "All right"');
+
+  // 4. Legitimate prose starting with "Plan..." MUST NOT BE STRIPPED
+  const legitimatePlan = `[STORY_START]
+Plan B was in motion. The forge glowed bright against the dark granite walls.
+[STORY_END]`;
+  const parsedPlan = parseStoryStreamOutput(legitimatePlan);
+  assert(parsedPlan.prose.startsWith('Plan B was in motion'), 'Protects legitimate prose starting with "Plan"');
+
+  // 5. Streaming sanitizer withholds in-progress preamble and releases once narrative begins
+  const streamingIncompletePreamble = sanitizeStreamBuffer('We need to write a story about Evan');
+  assert(streamingIncompletePreamble.prose === '', 'Streaming sanitizer withholds in-progress preamble');
+  assert(streamingIncompletePreamble.thinking.includes('We need to write'), 'In-progress preamble routed to thinking');
+
+  const streamingCompletedPreamble = sanitizeStreamBuffer('We need to write a story about Evan.\n\nThe cold Roman stone bit into his palms.');
+  assert(streamingCompletedPreamble.prose.startsWith('The cold Roman stone bit into his palms.'), 'Streaming sanitizer releases prose once preamble is completed');
+
+  // 6. Streaming sanitizer with residual preamble inside [STORY_START]
+  const streamingInsidePreamble = sanitizeStreamBuffer('[STORY_START]\nHere is the story:\n\nThe cold Roman stone bit into his palms.');
+  assert(streamingInsidePreamble.prose.startsWith('The cold Roman stone bit into his palms.'), 'Streaming sanitizer strips preamble inside [STORY_START]');
+}
+
 console.log(`\n========================================`);
 console.log(`TOTAL UNIT TESTS: ${passed + failed} | PASSED: ${passed} | FAILED: ${failed}`);
 console.log(`========================================\n`);
 
 if (failed > 0) process.exit(1);
+

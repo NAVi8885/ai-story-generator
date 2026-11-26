@@ -1,194 +1,142 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+/**
+ * StoryContext (Frontend MVC State Bridge)
+ * Connects pure Domain Models (models/*) and API/Media/Audio Controllers (controllers/*)
+ * to React presentation Views via Context.
+ */
+
+import React, { createContext, useContext, useState, useEffect, useReducer, useRef } from 'react';
+import { extractCastFromProse } from '../utils/castExtractor.js';
+import { rollProceduralDice } from '../utils/narrativeDice.js';
+import { auditProse } from '../utils/literaryAuditor.js';
+import { IMAGE_STYLE_PRESETS } from '../utils/imageStylePresets.js';
+
+import {
+  GENRE_PRESETS,
+  DEFAULT_SLIDERS,
+  MASTER_STYLE_PRESETS,
+  DEFAULT_BIBLE,
+  SECTION_DEFAULT_KEYS,
+  normalizeChapter,
+  clampChapterIndex,
+  normalizeRestoredHistoryEntry,
+  buildStoryExportPayload
+} from '../models/storyModel.js';
+import {
+  STORAGE_KEYS,
+  createInitialStationState,
+  safeLoadState,
+  safeSaveState,
+  stationReducer,
+  exportStationSession,
+  importStationSession
+} from '../models/stationModel.js';
+import {
+  tokenizeSentences,
+  mapCharIndexToSentence,
+  sanitizeClientStreamBuffer
+} from '../models/streamModel.js';
+
+import {
+  enhancePremiseRequest,
+  saveApiKeysRequest,
+  requestNextChapterPrompt,
+  streamStoryGeneration,
+  triggerFileDownload
+} from '../controllers/storyController.js';
+import {
+  extractScenePromptRequest,
+  generateSceneArtworkRequest,
+  exportArtworkAction
+} from '../controllers/mediaController.js';
+import {
+  playSpeechNarration,
+  pauseSpeechNarration,
+  resumeSpeechNarration,
+  stopSpeechNarration,
+  toggleAmbientSoundscape,
+  setAmbientSoundscapePreset,
+  setAmbientSoundscapeVolume
+} from '../controllers/audioController.js';
+
+export {
+  GENRE_PRESETS,
+  DEFAULT_SLIDERS,
+  MASTER_STYLE_PRESETS,
+  STORAGE_KEYS,
+  createInitialStationState,
+  safeLoadState,
+  safeSaveState,
+  stationReducer,
+  tokenizeSentences,
+  mapCharIndexToSentence,
+  exportStationSession,
+  importStationSession,
+  normalizeChapter
+};
 
 const StoryContext = createContext(null);
-
-export const GENRE_PRESETS = [
-  { id: 'fantasy', name: 'Fantasy', icon: '⚔️', creativity: 0.85, tone: 'balanced', pacing: 'atmospheric', strictness: 75 },
-  { id: 'scifi', name: 'Sci-Fi', icon: '🚀', creativity: 0.90, tone: 'gritty', pacing: 'brisk', strictness: 80 },
-  { id: 'horror', name: 'Horror', icon: '🕯️', creativity: 0.95, tone: 'dark', pacing: 'slow-burn', strictness: 70 },
-  { id: 'mystery', name: 'Mystery', icon: '🔍', creativity: 0.75, tone: 'gritty', pacing: 'balanced', strictness: 85 },
-  { id: 'romance', name: 'Romance', icon: '🌹', creativity: 0.80, tone: 'lighthearted', pacing: 'atmospheric', strictness: 75 },
-  { id: 'cyberpunk', name: 'Cyberpunk', icon: '⚡', creativity: 0.95, tone: 'gritty', pacing: 'action', strictness: 70 },
-  { id: 'custom', name: 'Custom', icon: '✨', creativity: 0.80, tone: 'balanced', pacing: 'balanced', strictness: 75 }
-];
-
-const DEFAULT_SLIDERS = {
-  creativity: 0.8,
-  tone: 'balanced',
-  targetLength: 'short',
-  pacing: 'balanced',
-  strictness: 75,
-  thinkingDepth: 'balanced'
-};
-
-const DEFAULT_BIBLE = {
-  characters: '',
-  worldRules: '',
-  canonNotes: ''
-};
-
-function sanitizeClientStreamBuffer(rawBuffer) {
-  if (!rawBuffer || typeof rawBuffer !== 'string') {
-    return { thinking: '', prose: '' };
-  }
-
-  let working = rawBuffer;
-  let thinking = '';
-  let prose = '';
-
-  // 1. If currently opening a partial <thinking> tag at the start, withhold
-  const trimmed = working.trimStart();
-  if (trimmed.length > 0 && trimmed.length < 10 && '<thinking>'.startsWith(trimmed)) {
-    return { thinking: '', prose: '' };
-  }
-
-  // 2. Full <thinking>...</thinking> extraction
-  const thinkingStart = working.indexOf('<thinking>');
-  if (thinkingStart !== -1) {
-    const thinkingEnd = working.indexOf('</thinking>');
-    if (thinkingEnd !== -1) {
-      thinking = working.slice(thinkingStart + 10, thinkingEnd).trim();
-      working = working.slice(thinkingEnd + 11);
-    } else {
-      const storyStartIdx = working.indexOf('[STORY_START]');
-      if (storyStartIdx !== -1 && storyStartIdx > thinkingStart) {
-        thinking = working.slice(thinkingStart + 10, storyStartIdx).trim();
-        working = working.slice(storyStartIdx);
-      } else {
-        // Still actively streaming thinking: withhold story tokens
-        thinking = working.slice(thinkingStart + 10).trim();
-        return { thinking, prose: '' };
-      }
-    }
-  }
-
-  // 3. Interactive branch choices isolation
-  const branchIdx = working.indexOf('[BRANCH_CHOICES]');
-  if (branchIdx !== -1) {
-    working = working.slice(0, branchIdx);
-  }
-
-  // 4. Output boundary delimiter isolation ([STORY_START] / [STORY_END])
-  const storyStartIdx = working.indexOf('[STORY_START]');
-  if (storyStartIdx !== -1) {
-    const preText = working.slice(0, storyStartIdx).trim();
-    if (preText && !thinking) {
-      thinking = preText;
-    }
-    let afterStart = working.slice(storyStartIdx + 13);
-    const storyEndIdx = afterStart.indexOf('[STORY_END]');
-    if (storyEndIdx !== -1) {
-      prose = afterStart.slice(0, storyEndIdx);
-    } else {
-      prose = afterStart;
-    }
-  } else {
-    // If working starts with partial [STORY_START] delimiter, withhold
-    const workingTrimmed = working.trimStart();
-    if (workingTrimmed.length > 0 && workingTrimmed.length < 13 && '[STORY_START]'.startsWith(workingTrimmed)) {
-      return { thinking, prose: '' };
-    }
-
-    // Separate leading meta-planning paragraphs from prose during client streaming
-    const metaPatterns = [
-      /^\s*(?:we need|we must|we will|we'll|let's|all right|outline|theme|narrative beats|guidelines|plan|chapter breakdown|here is the story|in chapter \d+:|we can pick|sensory anchor)/i,
-      /(?:words total|branching at end|guidelines: show|sensory anchor)/i
-    ];
-
-    const paragraphs = working.split(/\n\s*\n/);
-    const metaParas = [];
-    const proseParas = [];
-    let storyBegan = false;
-
-    for (const para of paragraphs) {
-      const pTrim = para.trim();
-      if (!pTrim) continue;
-      if (!storyBegan) {
-        const isMeta = metaPatterns.some((p) => p.test(pTrim));
-        if (isMeta) {
-          metaParas.push(pTrim);
-          continue;
-        }
-        storyBegan = true;
-      }
-      proseParas.push(para);
-    }
-
-    if (metaParas.length > 0 && !thinking) {
-      thinking = metaParas.join('\n\n');
-    }
-    prose = proseParas.join('\n\n');
-  }
-
-  // Strip raw delimiter tags
-  prose = prose
-    .replace(/\[\/?STORY_(?:START|END)\]/gi, '')
-    .replace(/\[\/?BRANCH_CHOICES\]/gi, '')
-    .replace(/<\/?thinking>/gi, '');
-
-  // Strip trailing partial delimiters during live streaming
-  for (const tag of ['[STORY_START]', '[STORY_END]', '[BRANCH_CHOICES]', '[/BRANCH_CHOICES]', '</thinking>']) {
-    for (let len = tag.length - 1; len >= 1; len--) {
-      if (prose.endsWith(tag.slice(0, len))) {
-        prose = prose.slice(0, -len);
-        break;
-      }
-    }
-  }
-
-  return {
-    thinking,
-    prose: prose.trimStart()
-  };
-}
 
 export function StoryProvider({ children }) {
   const [prompt, setPrompt] = useState('');
   const [genre, setGenre] = useState('custom');
-  const [sliders, setSliders] = useState(() => {
-    try {
-      const saved = localStorage.getItem('ai_story_sliders');
-      return saved ? JSON.parse(saved) : DEFAULT_SLIDERS;
-    } catch {
-      return DEFAULT_SLIDERS;
-    }
-  });
 
-  const [storyBible, setStoryBible] = useState(() => {
-    try {
-      const saved = localStorage.getItem('ai_story_bible');
-      return saved ? JSON.parse(saved) : DEFAULT_BIBLE;
-    } catch {
-      return DEFAULT_BIBLE;
-    }
-  });
-
-  const [byok, setByok] = useState(() => {
-    try {
-      const saved = localStorage.getItem('ai_story_byok');
-      return saved ? JSON.parse(saved) : { groq: '', gemini: '', openrouter: '', huggingface: '' };
-    } catch {
-      return { groq: '', gemini: '', openrouter: '', huggingface: '' };
-    }
-  });
-
+  const [sliders, setSliders] = useState(() =>
+    safeLoadState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_sliders', DEFAULT_SLIDERS)
+  );
+  const [storyBible, setStoryBible] = useState(() =>
+    safeLoadState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_bible', DEFAULT_BIBLE)
+  );
+  const [byok, setByok] = useState(() =>
+    safeLoadState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_byok', {
+      groq: '',
+      gemini: '',
+      openrouter: '',
+      huggingface: ''
+    })
+  );
   const [history, setHistory] = useState(() => {
     try {
-      const saved = localStorage.getItem('ai_story_history');
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('ai_story_history') : null;
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
     }
   });
 
+  const [stationState, dispatchStation] = useReducer(stationReducer, undefined, () => {
+    const defaults = createInitialStationState();
+    if (typeof window === 'undefined' || !window.localStorage) return defaults;
+    return {
+      dramatisPersonae: safeLoadState(window.localStorage, STORAGE_KEYS.CAST, defaults.dramatisPersonae),
+      plotCatalyst: safeLoadState(window.localStorage, STORAGE_KEYS.CATALYST, defaults.plotCatalyst),
+      sceneIllustrator: safeLoadState(window.localStorage, STORAGE_KEYS.ILLUSTRATOR, defaults.sceneIllustrator),
+      audioTheater: safeLoadState(window.localStorage, STORAGE_KEYS.AUDIO, defaults.audioTheater),
+      locationCodex: safeLoadState(window.localStorage, STORAGE_KEYS.LOCATION_LORE, defaults.locationCodex),
+      literaryAuditor: safeLoadState(window.localStorage, STORAGE_KEYS.AUDITOR, defaults.literaryAuditor)
+    };
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      safeSaveState(window.localStorage, STORAGE_KEYS.CAST, stationState.dramatisPersonae);
+      safeSaveState(window.localStorage, STORAGE_KEYS.CATALYST, stationState.plotCatalyst);
+      safeSaveState(window.localStorage, STORAGE_KEYS.ILLUSTRATOR, stationState.sceneIllustrator);
+      safeSaveState(window.localStorage, STORAGE_KEYS.AUDIO, stationState.audioTheater);
+      safeSaveState(window.localStorage, STORAGE_KEYS.LOCATION_LORE, stationState.locationCodex);
+      safeSaveState(window.localStorage, STORAGE_KEYS.AUDITOR, stationState.literaryAuditor);
+    }
+  }, [stationState]);
+
   const [story, setStory] = useState('');
   const [thinking, setThinking] = useState('');
   const [branchChoices, setBranchChoices] = useState([]);
   const [chapters, setChapters] = useState([]);
+  const [activeChapterIndex, setActiveChapterIndexState] = useState(0);
+  const [nextChapterSynthesis, setNextChapterSynthesis] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('prose'); // 'prose' | 'thinking'
+  const [activeTab, setActiveTab] = useState('prose');
 
   const [telemetry, setTelemetry] = useState({
     wordCount: 0,
@@ -200,32 +148,11 @@ export function StoryProvider({ children }) {
   const abortControllerRef = useRef(null);
   const streamStartTimeRef = useRef(null);
   const tokenCountRef = useRef(0);
+  const speechUtteranceRef = useRef(null);
 
-  // Persistence effects
-  useEffect(() => {
-    try {
-      localStorage.setItem('ai_story_sliders', JSON.stringify(sliders));
-    } catch (e) {
-      console.warn('Storage save error:', e);
-    }
-  }, [sliders]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('ai_story_bible', JSON.stringify(storyBible));
-    } catch (e) {
-      console.warn('Storage save error:', e);
-    }
-  }, [storyBible]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('ai_story_byok', JSON.stringify(byok));
-    } catch (e) {
-      console.warn('Storage save error:', e);
-    }
-  }, [byok]);
-
+  useEffect(() => { safeSaveState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_sliders', sliders); }, [sliders]);
+  useEffect(() => { safeSaveState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_bible', storyBible); }, [storyBible]);
+  useEffect(() => { safeSaveState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_byok', byok); }, [byok]);
   useEffect(() => {
     try {
       localStorage.setItem('ai_story_history', JSON.stringify(history));
@@ -234,25 +161,21 @@ export function StoryProvider({ children }) {
     }
   }, [history]);
 
-  // Telemetry calculation
   useEffect(() => {
     const words = story.trim() ? story.trim().split(/\s+/).length : 0;
-    const readingTime = (words / 225).toFixed(1);
-
-    setTelemetry((prev) => ({
-      ...prev,
-      wordCount: words,
-      readingTimeMinutes: parseFloat(readingTime)
-    }));
+    const readingTime = parseFloat((words / 225).toFixed(1));
+    setTelemetry((prev) => ({ ...prev, wordCount: words, readingTimeMinutes: readingTime }));
   }, [story]);
 
-  const updateSlider = (field, value) => {
-    setSliders((prev) => ({ ...prev, [field]: value }));
-  };
+  useEffect(() => {
+    if (story && story.trim().length > 30) {
+      const report = auditProse(story);
+      dispatchStation({ type: 'AUDITOR_SET_REPORT', payload: { audit: report } });
+    }
+  }, [story]);
 
-  const updateStoryBible = (field, value) => {
-    setStoryBible((prev) => ({ ...prev, [field]: value }));
-  };
+  const updateSlider = (field, value) => setSliders((prev) => ({ ...prev, [field]: value }));
+  const updateStoryBible = (field, value) => setStoryBible((prev) => ({ ...prev, [field]: value }));
 
   const saveAndPersistKeys = async (newKeys) => {
     const cleaned = {
@@ -261,26 +184,9 @@ export function StoryProvider({ children }) {
       openrouter: (newKeys.openrouter || '').trim(),
       huggingface: (newKeys.huggingface || '').trim()
     };
-
     setByok(cleaned);
-    try {
-      localStorage.setItem('ai_story_byok', JSON.stringify(cleaned));
-    } catch (e) {
-      console.warn('Storage save error:', e);
-    }
-
-    try {
-      const res = await fetch('/api/settings/save-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cleaned)
-      });
-      const data = await res.json();
-      return data;
-    } catch (err) {
-      console.warn('Server key persistence error:', err);
-      return { success: false, error: err.message };
-    }
+    safeSaveState(typeof window !== 'undefined' ? window.localStorage : null, 'ai_story_byok', cleaned);
+    return saveApiKeysRequest(cleaned);
   };
 
   const resetSliders = () => {
@@ -302,29 +208,33 @@ export function StoryProvider({ children }) {
     }
   };
 
-  // Enhance Premise
+  const applyMasterPreset = (presetId) => {
+    const preset = MASTER_STYLE_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    if (preset.genre) setGenre(preset.genre);
+    setSliders((prev) => ({ ...prev, ...preset.sliders }));
+  };
+
+  const resetSectionSliders = (sectionKey) => {
+    const keysToReset = SECTION_DEFAULT_KEYS[sectionKey];
+    if (!keysToReset) return;
+    setSliders((prev) => {
+      const updated = { ...prev };
+      keysToReset.forEach((k) => { updated[k] = DEFAULT_SLIDERS[k]; });
+      return updated;
+    });
+  };
+
   const enhancePrompt = async () => {
     if (!prompt.trim()) {
       setError('Please type an initial seed word or concept to enhance');
       return;
     }
-
     setIsEnhancing(true);
     setError('');
-
     try {
-      const res = await fetch('/api/enhance-prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.trim() })
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to enhance prompt');
-
-      if (data.enhanced) {
-        setPrompt(data.enhanced);
-      }
+      const enhanced = await enhancePremiseRequest({ prompt, byok });
+      if (enhanced) setPrompt(enhanced);
     } catch (err) {
       setError(err.message || 'Could not enhance prompt');
     } finally {
@@ -332,10 +242,154 @@ export function StoryProvider({ children }) {
     }
   };
 
-  // Core Streaming Story Generator
+  // Feature Station Actions
+  const addCharacter = (charData) => dispatchStation({ type: 'CAST_ADD_CHARACTER', payload: charData });
+  const updateCharacter = (id, updates) => dispatchStation({ type: 'CAST_UPDATE_CHARACTER', payload: { id, updates } });
+  const removeCharacter = (id) => dispatchStation({ type: 'CAST_REMOVE_CHARACTER', payload: { id } });
+  const setActivePov = (id) => dispatchStation({ type: 'CAST_SET_POV', payload: { id } });
+
+  const triggerCastExtraction = (textOverride) => {
+    const targetText = textOverride || story;
+    if (!targetText || !targetText.trim()) return [];
+    const extracted = extractCastFromProse(targetText);
+    if (extracted.length > 0) {
+      dispatchStation({ type: 'CAST_SET_ROSTER', payload: { characters: extracted } });
+    }
+    return extracted;
+  };
+
+  const rollCatalystDice = (options = {}) => {
+    const roll = rollProceduralDice({
+      ...options,
+      severity: options.severity ?? stationState.plotCatalyst.severity,
+      customWildcard: options.customWildcard ?? stationState.plotCatalyst.customWildcard
+    });
+    dispatchStation({ type: 'CATALYST_ROLL_DICE', payload: roll });
+    return roll;
+  };
+  const setCatalystSeverity = (severity) => dispatchStation({ type: 'CATALYST_SET_SEVERITY', payload: { severity } });
+  const toggleCatalystInjection = (enabled) => dispatchStation({ type: 'CATALYST_TOGGLE_INJECTION', payload: { enabled } });
+  const setCustomWildcard = (wildcard) => dispatchStation({ type: 'CATALYST_SET_CUSTOM_WILDCARD', payload: { wildcard } });
+
+  const setImageStyle = (stylePreset) => dispatchStation({ type: 'ILLUSTRATOR_SET_STYLE', payload: { stylePreset } });
+  const setCustomImagePrompt = (customPrompt) => dispatchStation({ type: 'ILLUSTRATOR_SET_PROMPTS', payload: { customPrompt } });
+  const setActiveImage = (image) => dispatchStation({ type: 'ILLUSTRATOR_SET_ACTIVE_IMAGE', payload: { image } });
+
+  const triggerPromptExtraction = async (textOverride) => {
+    const targetText = textOverride || story;
+    if (!targetText) return '';
+    const extracted = await extractScenePromptRequest({ prose: targetText, byok });
+    if (extracted) {
+      dispatchStation({ type: 'ILLUSTRATOR_SET_PROMPTS', payload: { extractedPrompt: extracted } });
+    }
+    return extracted;
+  };
+
+  const generateSceneArtwork = async (promptOverride, styleOverride) => {
+    const activeVisualPrompt = promptOverride || stationState.sceneIllustrator.customPrompt || stationState.sceneIllustrator.extractedPrompt || prompt;
+    const activeStyle = styleOverride || stationState.sceneIllustrator.stylePreset || 'dark_fantasy_oil';
+    if (!activeVisualPrompt) {
+      throw new Error('Please provide an image prompt or extract one from prose first');
+    }
+    const data = await generateSceneArtworkRequest({ prompt: activeVisualPrompt, stylePreset: activeStyle, byok });
+    dispatchStation({ type: 'ILLUSTRATOR_SET_ACTIVE_IMAGE', payload: { image: data } });
+    return data;
+  };
+
+  const exportArtwork = (imageItem, format = 'download') => {
+    exportArtworkAction(imageItem || stationState.sceneIllustrator.lastGeneratedImage, format);
+  };
+
+  const setAudioRates = ({ cadenceRate, pitch, volume }) =>
+    dispatchStation({ type: 'AUDIO_SET_RATES', payload: { cadenceRate, pitch, volume } });
+  const setActiveSentence = ({ paragraphIdx, sentenceIdx }) =>
+    dispatchStation({ type: 'AUDIO_SET_ACTIVE_SENTENCE', payload: { paragraphIdx, sentenceIdx } });
+  const playNarration = (textOverride) =>
+    playSpeechNarration({
+      text: textOverride || story,
+      audioTheater: stationState.audioTheater,
+      speechUtteranceRef,
+      dispatchStation
+    });
+  const pauseNarration = () => pauseSpeechNarration(dispatchStation);
+  const resumeNarration = () => resumeSpeechNarration(dispatchStation);
+  const stopNarration = () => stopSpeechNarration(dispatchStation);
+  const seekNarration = (sentenceIdx, paragraphIdx = 0) =>
+    dispatchStation({ type: 'AUDIO_SET_ACTIVE_SENTENCE', payload: { paragraphIdx, sentenceIdx } });
+  const setSelectedVoiceURI = (voiceURI) =>
+    dispatchStation({ type: 'AUDIO_SET_VOICE', payload: { voiceURI } });
+  const toggleAmbientAudio = (forceState) =>
+    toggleAmbientSoundscape({ forceState, audioTheater: stationState.audioTheater, dispatchStation });
+  const setAmbientPreset = (ambientPreset) =>
+    setAmbientSoundscapePreset({ ambientPreset, dispatchStation });
+  const setAmbientVolume = (ambientVolume) =>
+    setAmbientSoundscapeVolume({ ambientVolume, dispatchStation });
+
+  const setLocationPins = (pins) => dispatchStation({ type: 'LOCATION_SET_PINS', payload: pins });
+  const updateLocationField = (field, value) => dispatchStation({ type: 'LOCATION_SET_PINS', payload: { [field]: value } });
+  const addOrToggleLoreLock = (lockData) => dispatchStation({ type: 'LORE_ADD_OR_TOGGLE_LOCK', payload: lockData });
+  const removeLoreLock = (id) => dispatchStation({ type: 'LORE_REMOVE_LOCK', payload: { id } });
+
+  const triggerProseAudit = (textOverride) => {
+    const report = auditProse(textOverride || story);
+    dispatchStation({ type: 'AUDITOR_SET_REPORT', payload: { audit: report } });
+    return report;
+  };
+
+  const exportFeatureStationsSession = () => exportStationSession(stationState);
+  const importFeatureStationsSession = (jsonString) => {
+    const imported = importStationSession(jsonString);
+    if (imported) {
+      dispatchStation({ type: 'STATION_IMPORT_STATE', payload: imported });
+      return true;
+    }
+    return false;
+  };
+
+  // Multi-Chapter Saga Actions
+  const setActiveChapterIndex = (idx) => {
+    const clamped = clampChapterIndex(idx, chapters.length, isGenerating);
+    setActiveChapterIndexState(clamped);
+
+    const target = chapters[clamped];
+    if (target) {
+      setStory(target.content || '');
+      setThinking(target.thinking || '');
+    }
+    stopNarration();
+  };
+
+  const activeChapter = chapters[activeChapterIndex] || null;
+
+  useEffect(() => {
+    if (!isGenerating && chapters.length > 0) {
+      const active = chapters[activeChapterIndex];
+      if (active) {
+        if (story !== active.content) setStory(active.content || '');
+        if (thinking !== active.thinking) setThinking(active.thinking || '');
+      }
+    }
+  }, [activeChapterIndex, chapters, isGenerating]);
+
+  const generateNextChapterPrompt = async (targetIndex = activeChapterIndex) => {
+    const chapIndex = (typeof targetIndex === 'number' && targetIndex >= 0 && targetIndex < chapters.length)
+      ? targetIndex
+      : Math.max(0, chapters.length - 1);
+
+    const synthesis = await requestNextChapterPrompt({
+      chapters,
+      storyBible,
+      genre,
+      chapIndex,
+      byok,
+      story
+    });
+    setNextChapterSynthesis(synthesis);
+    return synthesis;
+  };
+
   const generateStory = async (seedOverride, isContinuation = false) => {
     const activePrompt = seedOverride || prompt;
-
     if (!activePrompt.trim()) {
       setError('Please provide a story premise first');
       return;
@@ -344,15 +398,16 @@ export function StoryProvider({ children }) {
     setIsGenerating(true);
     setError('');
     setBranchChoices([]);
+    stopNarration();
 
-    if (!isContinuation) {
-      setStory('');
-      setThinking('');
-      setChapters([]);
-    } else {
-      setStory('');
-      setThinking('');
-    }
+    const prevChapters = isContinuation ? [...chapters] : [];
+    const targetIndex = isContinuation ? prevChapters.length : 0;
+    const targetChapterNum = targetIndex + 1;
+
+    setActiveChapterIndexState(targetIndex);
+    setStory('');
+    setThinking('');
+    if (!isContinuation) setChapters([]);
 
     abortControllerRef.current = new AbortController();
     streamStartTimeRef.current = Date.now();
@@ -360,117 +415,91 @@ export function StoryProvider({ children }) {
 
     let rawAccumulatedStream = '';
     let accumulatedThinking = '';
+    let streamCompleted = false;
 
-    const headers = {
-      'Content-Type': 'application/json'
+    const activePovChar = stationState.dramatisPersonae.characters.find(
+      c => c.id === stationState.dramatisPersonae.activePovId || c.isPov
+    );
+
+    const payload = {
+      prompt: activePrompt,
+      sliders,
+      genre,
+      storyBible,
+      previousChapters: prevChapters,
+      includeBranchChoices: true,
+      dramatisPersonae: stationState.dramatisPersonae.characters.map(c => ({
+        ...c,
+        isPov: c.id === stationState.dramatisPersonae.activePovId
+      })),
+      activePovCharacter: activePovChar ? activePovChar.name : '',
+      locationPins: stationState.locationCodex.locationPins,
+      plotCatalyst: {
+        enabled: Boolean(stationState.plotCatalyst.enabled),
+        complication: stationState.plotCatalyst.selectedComplication,
+        severity: stationState.plotCatalyst.severity,
+        wildcard: stationState.plotCatalyst.customWildcard
+      },
+      loreMicroLocks: stationState.locationCodex.loreMicroLocks.filter(l => l.enabled)
     };
 
-    if (byok.groq) headers['x-byok-groq'] = byok.groq;
-    if (byok.gemini) headers['x-byok-gemini'] = byok.gemini;
-    if (byok.openrouter) headers['x-byok-openrouter'] = byok.openrouter;
-    if (byok.huggingface) headers['x-byok-hf'] = byok.huggingface;
-
     try {
-      const response = await fetch('/api/generate/stream', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          prompt: activePrompt,
-          sliders,
-          genre,
-          storyBible,
-          previousChapters: chapters,
-          includeBranchChoices: true
-        }),
-        signal: abortControllerRef.current.signal
-      });
+      await streamStoryGeneration({
+        payload,
+        byok,
+        signal: abortControllerRef.current.signal,
+        onProvider: (providerName) => {
+          setTelemetry((prev) => ({ ...prev, activeProvider: providerName || prev.activeProvider }));
+        },
+        onChunk: (parsed) => {
+          tokenCountRef.current += 1;
+          const elapsedSec = (Date.now() - streamStartTimeRef.current) / 1000;
+          const tps = elapsedSec > 0 ? (tokenCountRef.current / elapsedSec).toFixed(1) : 0;
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Generation failed (${response.status})`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const evtBlock of events) {
-          const lines = evtBlock.split('\n');
-          let eventType = 'chunk';
-          let dataText = '';
-
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              eventType = line.replace('event: ', '').trim();
-            } else if (line.startsWith('data: ')) {
-              dataText = line.replace('data: ', '').trim();
-            }
+          if (parsed.type === 'thinking') {
+            accumulatedThinking += parsed.text;
+            setThinking(accumulatedThinking);
+          } else if (parsed.type === 'prose_replace') {
+            rawAccumulatedStream = parsed.text;
+            const sanitized = sanitizeClientStreamBuffer(rawAccumulatedStream);
+            if (sanitized.thinking && !accumulatedThinking) setThinking(sanitized.thinking);
+            setStory(sanitized.prose);
+            setTelemetry((prev) => ({ ...prev, tokensPerSec: tps }));
+          } else if (parsed.type === 'prose') {
+            rawAccumulatedStream += parsed.text;
+            const sanitized = sanitizeClientStreamBuffer(rawAccumulatedStream);
+            if (sanitized.thinking && !accumulatedThinking) setThinking(sanitized.thinking);
+            setStory(sanitized.prose);
+            setTelemetry((prev) => ({ ...prev, tokensPerSec: tps }));
           }
+        },
+        onComplete: (parsed) => {
+          streamCompleted = true;
+          const sanitizedStream = sanitizeClientStreamBuffer(rawAccumulatedStream);
+          const finalProse = (parsed.prose || sanitizedStream.prose || '').trim();
+          const finalThinking = (parsed.thinking || accumulatedThinking || sanitizedStream.thinking || '').trim();
 
-          if (!dataText || dataText === '[DONE]') continue;
+          setStory(finalProse);
+          setThinking(finalThinking);
+          if (parsed.branchChoices?.length) setBranchChoices(parsed.branchChoices);
 
-          try {
-            const parsed = JSON.parse(dataText);
+          const completedChapter = {
+            number: targetChapterNum,
+            title: `Chapter ${targetChapterNum}`,
+            content: finalProse,
+            thinking: finalThinking,
+            timestamp: new Date().toISOString()
+          };
 
-            if (eventType === 'start') {
-              // Started generation
-            } else if (eventType === 'provider' || (eventType === 'chunk' && parsed.type === 'provider')) {
-              setTelemetry((prev) => ({
-                ...prev,
-                activeProvider: parsed.provider || prev.activeProvider
-              }));
-            } else if (eventType === 'chunk') {
-              tokenCountRef.current += 1;
-              const elapsedSec = (Date.now() - streamStartTimeRef.current) / 1000;
-              const tps = elapsedSec > 0 ? (tokenCountRef.current / elapsedSec).toFixed(1) : 0;
-
-              if (parsed.type === 'provider') {
-                setTelemetry((prev) => ({ ...prev, activeProvider: parsed.provider, tokensPerSec: tps }));
-              } else if (parsed.type === 'thinking') {
-                accumulatedThinking += parsed.text;
-                setThinking(accumulatedThinking);
-              } else if (parsed.type === 'prose') {
-                rawAccumulatedStream += parsed.text;
-                const sanitized = sanitizeClientStreamBuffer(rawAccumulatedStream);
-                if (sanitized.thinking && !accumulatedThinking) {
-                  setThinking(sanitized.thinking);
-                }
-                setStory(sanitized.prose);
-                setTelemetry((prev) => ({ ...prev, tokensPerSec: tps }));
-              }
-            } else if (eventType === 'complete') {
-              const sanitizedStream = sanitizeClientStreamBuffer(rawAccumulatedStream);
-              const finalProse = (parsed.prose || sanitizedStream.prose || '').trim();
-
-              setStory(finalProse);
-              if (parsed.thinking) setThinking(parsed.thinking);
-              if (parsed.branchChoices?.length) setBranchChoices(parsed.branchChoices);
-
-              // Auto-save this completed chapter
-              const newChapter = {
-                number: chapters.length + 1,
-                title: `Chapter ${chapters.length + 1}`,
-                content: finalProse,
-                timestamp: new Date().toISOString()
-              };
-
-              setChapters((prev) => [...prev, newChapter]);
-            } else if (eventType === 'error') {
-              throw new Error(parsed.error || 'Server stream error');
-            }
-          } catch {
-            // Skip json parse error
+          if (!isContinuation) {
+            setChapters([completedChapter]);
+            setActiveChapterIndexState(0);
+          } else {
+            setChapters((prev) => [...prev.slice(0, targetIndex), completedChapter]);
+            setActiveChapterIndexState(targetIndex);
           }
         }
-      }
+      });
     } catch (err) {
       if (err.name === 'AbortError' || err.message?.includes('aborted')) {
         console.log('Stream stopped by user.');
@@ -480,16 +509,62 @@ export function StoryProvider({ children }) {
       }
     } finally {
       setIsGenerating(false);
+      if (!streamCompleted && !rawAccumulatedStream.trim() && isContinuation) {
+        const fallbackIdx = Math.max(0, prevChapters.length - 1);
+        setActiveChapterIndexState(fallbackIdx);
+        if (prevChapters[fallbackIdx]) {
+          setStory(prevChapters[fallbackIdx].content || '');
+          setThinking(prevChapters[fallbackIdx].thinking || '');
+        }
+      } else if (!streamCompleted && rawAccumulatedStream.trim()) {
+        const sanitizedStream = sanitizeClientStreamBuffer(rawAccumulatedStream);
+        const partialProse = sanitizedStream.prose.trim();
+        const partialThinking = (accumulatedThinking || sanitizedStream.thinking || '').trim();
+        if (partialProse || partialThinking) {
+          const partialChapter = {
+            number: targetChapterNum,
+            title: `Chapter ${targetChapterNum}`,
+            content: partialProse,
+            thinking: partialThinking,
+            timestamp: new Date().toISOString()
+          };
+          if (!isContinuation) {
+            setChapters([partialChapter]);
+            setActiveChapterIndexState(0);
+          } else {
+            setChapters((prev) => [...prev.slice(0, targetIndex), partialChapter]);
+            setActiveChapterIndexState(targetIndex);
+          }
+        }
+      }
     }
   };
 
-  // Continue story with interactive branch choice
+  const continueToNextChapter = async (customPrompt) => {
+    const nextChapterNum = chapters.length + 1;
+    const promptToUse = (typeof customPrompt === 'string' && customPrompt.trim())
+      ? customPrompt.trim()
+      : (prompt.trim() || `Continue the story into Chapter ${nextChapterNum}. Escalate the narrative tension, advance the central conflict, and challenge the protagonist with an unforeseen dilemma.`);
+    await generateStory(promptToUse, true);
+  };
+
+  const startNewStory = () => {
+    setStory('');
+    setThinking('');
+    setChapters([]);
+    setActiveChapterIndexState(0);
+    setNextChapterSynthesis(null);
+    setBranchChoices([]);
+    setError('');
+    stopNarration();
+  };
+
   const continueWithBranch = async (choice) => {
-    const nextChapterPrompt = `Continue the story directly from Chapter ${chapters.length}. The protagonist takes this path: "${choice.title} - ${choice.description}". Introduce immediate consequences and develop the scene.`;
+    const nextChapterNum = chapters.length + 1;
+    const nextChapterPrompt = `Continue the story directly into Chapter ${nextChapterNum}. The protagonist takes this path: "${choice.title} - ${choice.description}". Introduce immediate consequences and develop the scene.`;
     await generateStory(nextChapterPrompt, true);
   };
 
-  // Stop Generation via AbortController
   const stopGeneration = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -498,109 +573,68 @@ export function StoryProvider({ children }) {
     setIsGenerating(false);
   };
 
-  // Save story to local history
   const saveCurrentToHistory = () => {
-    if (!story.trim()) return;
+    if (!story.trim() && chapters.length === 0) return;
 
     const entry = {
       id: `story_${Date.now()}`,
-      title: prompt.slice(0, 45) + (prompt.length > 45 ? '...' : ''),
+      title: prompt.slice(0, 45) + (prompt.length > 45 ? '...' : '') || (chapters[0]?.title || 'Untitled Saga'),
       prompt,
       genre,
       story,
       thinking,
       chapters,
+      activeChapterIndex,
       branchChoices,
       sliders,
       wordCount: telemetry.wordCount,
       timestamp: new Date().toISOString()
     };
 
-    setHistory((prev) => [entry, ...prev.slice(0, 49)]); // Keep up to 50
+    setHistory((prev) => [entry, ...prev.slice(0, 49)]);
   };
 
-  // Restore history entry
   const restoreFromHistory = (id) => {
     const found = history.find((h) => h.id === id);
     if (!found) return;
 
     setPrompt(found.prompt || '');
     setGenre(found.genre || 'custom');
-    setStory(found.story || '');
-    setThinking(found.thinking || '');
-    setChapters(found.chapters || []);
     setBranchChoices(found.branchChoices || []);
     if (found.sliders) setSliders(found.sliders);
+
+    const restoredChapters = normalizeRestoredHistoryEntry(found);
+    setChapters(restoredChapters);
+    setActiveChapterIndexState(0);
+    setStory(restoredChapters[0]?.content || found.story || '');
+    setThinking(restoredChapters[0]?.thinking || found.thinking || '');
     setError('');
+    stopNarration();
   };
 
-  // Delete history item
   const deleteHistoryItem = (id) => {
     setHistory((prev) => prev.filter((h) => h.id !== id));
   };
 
-  // Export story
   const exportStory = (format) => {
-    if (!story.trim()) return;
-
-    let content = '';
-    let mimeType = 'text/plain';
-    let filename = `story-${Date.now()}`;
-
-    if (format === 'markdown') {
-      content = `# ${prompt.slice(0, 60)}\n\n`;
-      content += `> **Genre:** ${genre.toUpperCase()} | **Words:** ${telemetry.wordCount} | **Generated:** ${new Date().toLocaleDateString()}\n\n`;
-
-      if (thinking.trim()) {
-        content += `## Narrative Blueprint (<thinking>)\n\n\`\`\`\n${thinking}\n\`\`\`\n\n---\n\n`;
-      }
-
-      if (chapters.length > 1) {
-        chapters.forEach((ch, idx) => {
-          content += `### Chapter ${idx + 1}\n\n${ch.content}\n\n---\n\n`;
-        });
-      } else {
-        content += `## Story\n\n${story}\n\n`;
-      }
-
-      if (branchChoices.length > 0) {
-        content += `### Next Plot Choices\n\n`;
-        branchChoices.forEach((bc, idx) => {
-          content += `${idx + 1}. **${bc.title}**: ${bc.description}\n`;
-        });
-      }
-
-      mimeType = 'text/markdown';
-      filename += '.md';
-    } else if (format === 'json') {
-      const data = {
-        meta: {
-          exportedAt: new Date().toISOString(),
-          genre,
-          sliders,
-          wordCount: telemetry.wordCount
-        },
-        prompt,
-        thinking,
-        story,
-        chapters,
-        branchChoices,
-        storyBible
-      };
-      content = JSON.stringify(data, null, 2);
-      mimeType = 'application/json';
-      filename += '.json';
+    if (!story.trim() && chapters.length === 0) return;
+    const filePayload = buildStoryExportPayload({
+      format,
+      prompt,
+      genre,
+      telemetry,
+      chapters,
+      thinking,
+      story,
+      branchChoices,
+      sliders,
+      storyBible,
+      stationState,
+      activeChapterIndex
+    });
+    if (filePayload.content) {
+      triggerFileDownload(filePayload);
     }
-
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
   return (
@@ -610,6 +644,9 @@ export function StoryProvider({ children }) {
         setPrompt,
         genre,
         applyGenrePreset,
+        applyMasterPreset,
+        resetSectionSliders,
+        masterStylePresets: MASTER_STYLE_PRESETS,
         sliders,
         updateSlider,
         resetSliders,
@@ -625,11 +662,23 @@ export function StoryProvider({ children }) {
         story,
         setStory,
         thinking,
+        setThinking,
         branchChoices,
         chapters,
+        setChapters,
+        activeChapterIndex,
+        setActiveChapterIndex,
+        activeChapter,
+        nextChapterSynthesis,
+        setNextChapterSynthesis,
+        generateNextChapterPrompt,
+        continueToNextChapter,
+        startNewStory,
+        normalizeChapter,
         isGenerating,
         isEnhancing,
         error,
+        setError,
         activeTab,
         setActiveTab,
         telemetry,
@@ -637,7 +686,52 @@ export function StoryProvider({ children }) {
         continueWithBranch,
         stopGeneration,
         enhancePrompt,
-        exportStory
+        exportStory,
+        castRoster: stationState.dramatisPersonae,
+        dramatisPersonae: stationState.dramatisPersonae,
+        plotCatalyst: stationState.plotCatalyst,
+        sceneIllustrator: stationState.sceneIllustrator,
+        audioTheater: stationState.audioTheater,
+        locationCodex: stationState.locationCodex,
+        literaryAuditor: stationState.literaryAuditor,
+        stationState,
+        addCharacter,
+        updateCharacter,
+        removeCharacter,
+        setActivePov,
+        triggerCastExtraction,
+        rollCatalystDice,
+        setCatalystSeverity,
+        toggleCatalystInjection,
+        setCustomWildcard,
+        imageStylePresets: IMAGE_STYLE_PRESETS,
+        setImageStyle,
+        setCustomImagePrompt,
+        setActiveImage,
+        triggerPromptExtraction,
+        generateSceneArtwork,
+        exportArtwork,
+        setAudioRates,
+        setActiveSentence,
+        playNarration,
+        pauseNarration,
+        resumeNarration,
+        stopNarration,
+        seekNarration,
+        setSelectedVoiceURI,
+        toggleAmbientAudio,
+        setAmbientPreset,
+        setAmbientVolume,
+        setLocationPins,
+        updateLocationField,
+        addOrToggleLoreLock,
+        removeLoreLock,
+        triggerProseAudit,
+        exportFeatureStationsSession,
+        importFeatureStationsSession,
+        generateStoryStream: generateStory,
+        generateBranchStream: continueWithBranch,
+        saveCurrentStory: saveCurrentToHistory
       }}
     >
       {children}
@@ -652,4 +746,3 @@ export function useStory() {
   }
   return context;
 }
-
